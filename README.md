@@ -3,7 +3,10 @@
 Play chess against the complete FlyWire fruit-fly connectome — 138,639 neurons, 15,091,983
 synapses, wired exactly as reconstructed — running on your own GPU in one browser tab.
 
-**Play:** https://flymate.naklitechie.com
+**Play chess:** https://flymate.naklitechie.com · **Play Go:** https://flymate.naklitechie.com/go
+· mirror: [huggingface.co/spaces/naklitechie/flymate](https://huggingface.co/spaces/naklitechie/flymate)
+
+<p align="center"><img src="docs/chess.png" width="49%" alt="Chess against the fly: the board, the fly's candidate moves, and its brain activity"> <img src="docs/go.png" width="49%" alt="9×9 Go against the fly, with its territory estimate drawn on the board"></p>
 
 Only an encoder, one positive gain per synapse, per-neuron homeostasis and a decoder were
 trained (on Stockfish-annotated Lichess positions); the wiring and its excitatory/inhibitory
@@ -13,6 +16,8 @@ positions with soft multi-PV policy targets. In the browser the fly searches
 three plies ahead (its moves, the opponent's best replies by policy, its own answers), pushing
 every position through the whole brain in batched passes; the search width adapts to the GPU
 so a move takes about 3 s. It has beaten Stockfish skill 1 from the app.
+
+<p align="center"><img src="docs/duel.png" width="70%" alt="Watch mode: the fly versus Stockfish"></p>
 
 ## How it works
 - `index.html` is the entire app: WebGPU compute shaders do a CSR sparse matrix–vector settle
@@ -24,7 +29,7 @@ so a move takes about 3 s. It has beaten Stockfish skill 1 from the app.
 - Training code, the connectome packing, and the exporter: [NakliTechie/gofly](https://github.com/NakliTechie/gofly)
   (`web/export.py` writes the bundle).
 
-## Go
+## Go — https://flymate.naklitechie.com/go
 `go.html` — the same brain trained on 9×9 Go (KataGo g170 self-play labels, CC0) with a
 **retinotopic** encoder: each board point drives the ~130 photoreceptors beneath it on the fly's
 eyes. Held-out: 30.1% agreement with KataGo's most-visited move (random 3.5%), 74.9% final-ownership
