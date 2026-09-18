@@ -42,12 +42,13 @@ footer{max-width:1080px;margin:0 auto;padding:0 20px 40px;color:var(--dim);font-
 #overlay .box{width:min(520px,92vw);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px}
 #overlay h2{margin:0 0 6px;font-size:20px}
 label.tog{display:inline-flex;align-items:center;gap:6px;color:var(--dim);font-size:13px;cursor:pointer}
+select{background:#1f2530;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit}
 </style>
 </head>
 <body>
 <header>
   <h1>FlyMate <span>·</span> are you smarter than a fly?</h1>
-  <p class="sub">The complete FlyWire fruit-fly connectome — 138,639 neurons, 15,091,983 synapses, wired exactly as reconstructed — trained to play chess. It runs on your GPU, in this tab. Nothing leaves your device.</p>
+  <p class="sub">The complete FlyWire fruit-fly connectome — 138,639 neurons, 15,091,983 synapses, wired exactly as reconstructed — trained to play chess. It runs on your GPU, in this tab. Nothing leaves your device. Too easy? Switch the opponent to Stockfish, or watch the two fight.</p>
 </header>
 <main>
   <div>
@@ -56,7 +57,18 @@ label.tog{display:inline-flex;align-items:center;gap:6px;color:var(--dim);font-s
       <button id="new" class="primary">New game</button>
       <button id="side">Play as Black</button>
       <button id="undo">Undo</button>
-      <label class="tog"><input type="checkbox" id="look" checked> fly looks one move ahead</label>
+      <label class="tog">opponent
+        <select id="opp">
+          <option value="fly-look" selected>Fly · looks one move ahead</option>
+          <option value="fly-instinct">Fly · instinct only</option>
+          <option value="sf-1">Stockfish · skill 1</option>
+          <option value="sf-3">Stockfish · skill 3</option>
+          <option value="sf-5">Stockfish · skill 5</option>
+          <option value="sf-10">Stockfish · skill 10</option>
+          <option value="sf-20">Stockfish · skill 20</option>
+        </select>
+      </label>
+      <button id="duel">Watch Fly vs Stockfish</button>
     </div>
     <div class="moves" id="moves"></div>
   </div>
@@ -139,7 +151,7 @@ function canonical(game) {                         // → {fen (white to move), 
 
 // ---------- WebGPU brain ----------
 const WGSL = /* wgsl */`
-struct P { n: u32, b: u32, t: u32, nin: u32, nro: u32, d: u32, f: u32, nout: u32, leak: f32, pad0: u32, pad1: u32, pad2: u32 }
+struct P { n: u32, b: u32, t: u32, nin: u32, nro: u32, d: u32, f: u32, nout: u32, leak: f32, roff: u32, rlen: u32, pad2: u32 }
 @group(0) @binding(0) var<uniform> p: P;
 @group(0) @binding(1) var<storage, read> indptr: array<u32>;
 @group(0) @binding(2) var<storage, read> eidx: array<u32>;
@@ -152,7 +164,8 @@ struct P { n: u32, b: u32, t: u32, nin: u32, nro: u32, d: u32, f: u32, nout: u32
 const BMAX: u32 = 72u;
 fn w16(e: u32) -> f32 { let v = unpack2x16float(ew[e >> 1u]); return select(v.x, v.y, (e & 1u) == 1u); }
 @compute @workgroup_size(64) fn settle(@builtin(global_invocation_id) g: vec3<u32>) {
-  let row = g.x; if (row >= p.n) { return; }
+  if (g.x >= p.rlen) { return; }
+  let row = g.x + p.roff; if (row >= p.n) { return; }
   var acc: array<f32, BMAX>;
   for (var b = 0u; b < p.b; b++) { acc[b] = 0.0; }
   let e0 = indptr[row]; let e1 = indptr[row + 1u];
@@ -168,10 +181,13 @@ fn w16(e: u32) -> f32 { let v = unpack2x16float(ew[e >> 1u]); return select(v.x,
     hout[row * p.b + b] = (1.0 - p.leak) * h + p.leak * max(A * pre + Bc, 0.0);
   }
 }
-@compute @workgroup_size(64) fn clear(@builtin(global_invocation_id) g: vec3<u32>) { if (g.x < p.n * p.b) { hout[g.x] = 0.0; } }
+@compute @workgroup_size(64) fn clear(@builtin(global_invocation_id) g: vec3<u32>) {   // one thread per row: N·B/64 workgroups would exceed the 65535 dispatch limit at B ≥ 31
+  if (g.x >= p.n) { return; }
+  for (var b = 0u; b < p.b; b++) { hout[g.x * p.b + b] = 0.0; }
+}
 `;
 const WGSL2 = /* wgsl */`
-struct P { n: u32, b: u32, t: u32, nin: u32, nro: u32, d: u32, f: u32, nout: u32, leak: f32, pad0: u32, pad1: u32, pad2: u32 }
+struct P { n: u32, b: u32, t: u32, nin: u32, nro: u32, d: u32, f: u32, nout: u32, leak: f32, roff: u32, rlen: u32, pad2: u32 }
 @group(0) @binding(0) var<uniform> p: P;
 @group(0) @binding(1) var<storage, read> encw: array<u32>;     // f16 [nin][F]
 @group(0) @binding(2) var<storage, read> encb: array<f32>;
@@ -258,29 +274,51 @@ class Brain {
     const g2 = h => ({ enc: bg(this.pEnc, all2(h), used.encoder), dec: bg(this.pDec, all2(h), used.decoder), heads: bg(this.pHeads, all2(h), used.heads), gather: bg(this.pGather, all2(h), used.gatherRoot) });
     this.bg2 = { A: g2(this.hA), B: g2(this.hB) };
   }
-  setUni(b, t) {
+  setUni(b, t, roff = 0, rlen = this.N) {
     const u = new ArrayBuffer(48); const dv = new DataView(u);
     [this.N, b, t, this.nin, this.nro, this.D, this.F, this.nout].forEach((v, i) => dv.setUint32(i * 4, v, true)); dv.setFloat32(32, this.meta.leak, true);
+    dv.setUint32(36, roff, true); dv.setUint32(40, rlen, true);
     this.dev.queue.writeBuffer(this.uni, 0, u);
+  }
+  /** Rows per settle dispatch so that one GPU submission stays under targetMs (mobile GPUs kill long ones). */
+  chunkRows(B) {
+    if (!this.cost) return this.N;
+    const stepMs = this.cost.a + this.cost.b * B;                 // predicted ms for one full-N settle step at batch B
+    const chunks = Math.max(1, Math.ceil(stepMs / this.targetMs));
+    return Math.max(1024, Math.ceil(this.N / chunks / 64) * 64);
+  }
+  /** Time two forwards to fit settle cost ≈ a + b·B (ms per step). */
+  async calibrate(x) {
+    const t = async (B) => { const t0 = performance.now(); await this.forward(Array.from({ length: B }, () => x)); return performance.now() - t0; };
+    await t(1);                                                 // warm shaders
+    const t1 = await t(1), t8 = await t(8);
+    const b = Math.max(0, (t8 - t1) / 7 / this.T), a = Math.max(0.1, t1 / this.T - b);
+    this.cost = { a, b }; this.targetMs = 250;
+    return { t1, t8, a, b };
   }
   /** xs: array of Float32Array(780) → { logits: Float32Array[B][nout], hroot?: Float32Array(N) } */
   async forward(xs, wantRoot = false) {
     const B = xs.length; if (B > this.BMAX) throw new Error('batch too large');
     const xb = new Float32Array(B * this.F); xs.forEach((x, i) => xb.set(x, i * this.F));
     this.dev.queue.writeBuffer(this.x, 0, xb);
-    const wg = n => Math.ceil(n / 64);
+    const wg = n => { const w = Math.ceil(n / 64); if (w > 65535) throw new Error(`dispatch too large: ${w} workgroups`); return w; };
     // clear hA, encoder → uin, then settle T steps ping-pong: hA→hB→hA...
     this.setUni(B, 0);
     let enc = this.dev.createCommandEncoder(); let pass = enc.beginComputePass();
-    pass.setPipeline(this.pClear); pass.setBindGroup(0, this.bgClear); pass.dispatchWorkgroups(wg(this.N * B));
+    pass.setPipeline(this.pClear); pass.setBindGroup(0, this.bgClear); pass.dispatchWorkgroups(wg(this.N));
     pass.setPipeline(this.pEnc); pass.setBindGroup(0, this.bg2.A.enc); pass.dispatchWorkgroups(wg(this.nin * B));
     pass.end(); this.dev.queue.submit([enc.finish()]);
-    let cur = 'A';
+    let cur = 'A'; const rows = this.chunkRows(B);
     for (let t = 0; t < this.T; t++) {
-      this.setUni(B, t);
-      enc = this.dev.createCommandEncoder(); pass = enc.beginComputePass();
-      pass.setPipeline(this.pSettle); pass.setBindGroup(0, cur === 'A' ? this.bgAB : this.bgBA); pass.dispatchWorkgroups(wg(this.N));
-      pass.end(); this.dev.queue.submit([enc.finish()]); cur = cur === 'A' ? 'B' : 'A';
+      for (let off = 0; off < this.N; off += rows) {              // one submission per row chunk
+        const len = Math.min(rows, this.N - off);
+        this.setUni(B, t, off, len);
+        enc = this.dev.createCommandEncoder(); pass = enc.beginComputePass();
+        pass.setPipeline(this.pSettle); pass.setBindGroup(0, cur === 'A' ? this.bgAB : this.bgBA); pass.dispatchWorkgroups(wg(len));
+        pass.end(); this.dev.queue.submit([enc.finish()]);
+        if (off + rows < this.N) await this.dev.queue.onSubmittedWorkDone();   // let the driver breathe between chunks
+      }
+      cur = cur === 'A' ? 'B' : 'A';
     }
     const g = this.bg2[cur];
     enc = this.dev.createCommandEncoder(); pass = enc.beginComputePass();
@@ -300,12 +338,41 @@ class Brain {
 
 // ---------- game ----------
 let brain, meta, moveIndex, game = new Chess(), human = 'w', busy = false, lastMove = null, sel = null, posXY = null;
+let bundle = null, duel = false, duelOver = false, sfWorker = null, sfReady = null;
+const opp = () => $('opp').value;                       // 'fly-look' | 'fly-instinct' | 'sf-N'
+const SF_DEPTH = { 1: 1, 3: 3, 5: 5, 10: 8, 20: 14 };
+
+// ---------- Stockfish (stockfish.js 10, blob worker — same wiring as GambitLocal) ----------
+function stockfish() {
+  if (sfReady) return sfReady;
+  sfReady = fetch('https://cdn.jsdelivr.net/npm/stockfish.js@10.0.2/stockfish.js').then(r => r.text()).then(src => new Promise((res, rej) => {
+    const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })));
+    w.onerror = e => rej(new Error('Stockfish worker: ' + e.message));
+    w.onmessage = ({ data }) => { if (data === 'uciok') w.postMessage('isready'); else if (data === 'readyok') { sfWorker = w; res(w); } };
+    w.postMessage('uci');
+  }));
+  return sfReady;
+}
+async function stockfishMove(fen, skill) {
+  const w = await stockfish();
+  return new Promise(res => {
+    const h = ({ data }) => { if (typeof data === 'string' && data.startsWith('bestmove')) { w.removeEventListener('message', h); res(data.split(' ')[1]); } };
+    w.addEventListener('message', h);
+    w.postMessage('setoption name Skill Level value ' + skill); w.postMessage('position fen ' + fen); w.postMessage('go depth ' + (SF_DEPTH[skill] || 5));
+  });
+}
 const centers = () => Float32Array.from({ length: 64 }, (_, i) => (i + 0.5) / 64);
 const softmaxDot = (v, off, n, c) => { let mx = -Infinity; for (let i = 0; i < n; i++) mx = Math.max(mx, v[off + i]); let s = 0, acc = 0;
   for (let i = 0; i < n; i++) { const e = Math.exp(v[off + i] - mx); s += e; acc += e * c[i]; } return acc / s; };
 
 async function verify() {
   const C = centers(); let maxErr = 0, ok = true, lines = [];
+  // batch consistency: a full-width batch of alternating positions must equal the B=1 results (caught a dispatch-limit bug at B ≥ 31)
+  { const fens = meta.tests.map(t => canonical(new Chess(t.fen + ' 0 1')).fen); const xs = fens.map(features);
+    const singles = []; for (const x of xs) singles.push((await brain.forward([x])).logits);
+    const B = brain.BMAX; const big = (await brain.forward(Array.from({ length: B }, (_, i) => xs[i % xs.length]))).logits;
+    let worst = 0; for (let k = 0; k < B; k++) { const ref = singles[k % xs.length]; for (let i = 0; i < brain.nout; i++) worst = Math.max(worst, Math.abs(big[k * brain.nout + i] - ref[i])); }
+    const pass = worst < 1e-3; ok = ok && pass; lines.push(`${pass ? '✓' : '✗'} batch of ${B} matches single positions (max diff ${worst.toExponential(1)})`); }
   for (const t of meta.tests) {
     const g = new Chess(t.fen + ' 0 1'); const { fen } = canonical(g);
     const { logits } = await brain.forward([features(fen)]);
@@ -327,7 +394,7 @@ async function flyMove() {
   const t0 = performance.now();
   const legal = game.moves({ verbose: true });
   const root = canonical(game); const xs = [features(root.fen)]; const meta_ = [];
-  const look = $('look').checked;
+  const look = opp() !== 'fly-instinct';
   if (look) for (const m of legal) {
     game.move(m); const term = game.isCheckmate() ? 1 : game.isDraw() ? 0.5 : null;
     if (term === null) { const c = canonical(game); xs.push(features(c.fen)); meta_.push({ m, idx: xs.length - 1, term }); } else meta_.push({ m, idx: -1, term });
@@ -335,8 +402,10 @@ async function flyMove() {
   }
   // batches of ≤ BMAX
   const logits = new Float32Array(xs.length * brain.nout); let hroot = null;
-  for (let s = 0; s < xs.length; s += brain.BMAX) {
-    const r = await brain.forward(xs.slice(s, s + brain.BMAX), s === 0); logits.set(r.logits, s * brain.nout); if (s === 0) hroot = r.hroot;
+  const per = brain.batchCap ? Math.min(brain.BMAX, brain.batchCap) : brain.BMAX;
+  for (let s = 0; s < xs.length; s += per) {
+    if (xs.length > per) say(`The fly is thinking… ${s}/${xs.length} positions`);
+    const r = await brain.forward(xs.slice(s, s + per), s === 0); logits.set(r.logits, s * brain.nout); if (s === 0) hroot = r.hroot;
   }
   // policy prior over legal moves (root, canonical orientation)
   const prior = new Map(); let mx = -Infinity;
@@ -355,6 +424,30 @@ async function flyMove() {
   $('cands').innerHTML = scored.slice(0, 5).map((s, i) => `${i === 0 ? '<b>' : ''}${s.m.san.padEnd(7)} ${look ? 'win ' + (s.win * 100).toFixed(0).padStart(3) + '%' : ''}  prior ${(s.prior * 100).toFixed(0).padStart(3)}%${i === 0 ? '</b>' : ''}`).join('<br>');
   if (hroot) drawBrain(hroot);
   busy = false; sel = null; render();
+}
+
+async function engineMove() {
+  if (game.isGameOver() || busy) return; busy = true; render();
+  const skill = +opp().slice(3); const t0 = performance.now();
+  try {
+    const uci = await stockfishMove(game.fen(), skill);
+    const mv = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] || undefined }); lastMove = mv;
+    $('timing').textContent = `Stockfish (skill ${skill}, depth ${SF_DEPTH[skill]}) in ${(performance.now() - t0).toFixed(0)} ms`;
+    $('cands').textContent = mv.san;
+  } catch (e) { say(`<span class="err">Stockfish failed: ${e.message}</span>`); }
+  busy = false; sel = null; render();
+}
+const opponentMove = () => opp().startsWith('sf-') ? engineMove() : flyMove();
+
+async function runDuel() {
+  duel = true; duelOver = false; $('duel').textContent = 'Stop'; game = new Chess(); lastMove = null; sel = null; human = 'w'; render();
+  const skill = opp().startsWith('sf-') ? +opp().slice(3) : 1;
+  while (duel && !game.isGameOver()) {
+    if (game.turn() === 'w') await flyMove();
+    else { busy = true; render(); try { const uci = await stockfishMove(game.fen(), skill); lastMove = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] || undefined }); } catch (e) { say(`<span class="err">${e.message}</span>`); duel = false; } busy = false; render(); }
+    await new Promise(r => setTimeout(r, 150));
+  }
+  duel = false; duelOver = true; $('duel').textContent = 'Watch Fly vs Stockfish'; render();
 }
 
 function drawBrain(h) {
@@ -388,24 +481,31 @@ function render() {
     el.onclick = () => onSquare(sq); bd.appendChild(el);
   }
   const h = game.history(); $('moves').textContent = h.map((m, i) => (i % 2 === 0 ? `${i / 2 + 1}. ` : '') + m).join(' ');
+  const inDuel = duel || duelOver; const oppName = inDuel ? 'Stockfish' : opp().startsWith('sf-') ? 'Stockfish' : 'the fly';
   if (game.isGameOver()) {
-    const res = game.isCheckmate() ? (game.turn() === human ? 'Checkmate. The fly wins.' : 'Checkmate — you beat a fly.') : game.isStalemate() ? 'Stalemate.' : game.isThreefoldRepetition() ? 'Draw by repetition.' : game.isInsufficientMaterial() ? 'Draw — insufficient material.' : 'Draw.';
-    say(res, game.isCheckmate() && game.turn() !== human ? 'ok' : '');
-  } else if (busy) say('The fly is thinking…');
-  else say(game.turn() === human ? (game.inCheck() ? 'Your move — you are in check.' : 'Your move.') : 'Fly to move.');
-  $('undo').disabled = busy || game.history().length < 1; $('side').textContent = human === 'w' ? 'Play as Black' : 'Play as White';
+    const loserIsWhite = game.turn() === 'w';
+    const res = game.isCheckmate() ? (inDuel ? (loserIsWhite ? 'Checkmate — Stockfish beats the fly.' : 'Checkmate — the fly beats Stockfish.') : game.turn() === human ? `Checkmate. ${oppName === 'the fly' ? 'The fly' : oppName} wins.` : oppName === 'the fly' ? 'Checkmate — you beat a fly.' : 'Checkmate — you beat Stockfish.')
+      : game.isStalemate() ? 'Stalemate.' : game.isThreefoldRepetition() ? 'Draw by repetition.' : game.isInsufficientMaterial() ? 'Draw — insufficient material.' : 'Draw.';
+    say(res, game.isCheckmate() && ((!inDuel && game.turn() !== human) || (inDuel && !loserIsWhite)) ? 'ok' : '');
+  } else if (duel) say(game.turn() === 'w' ? 'Fly (White) is thinking…' : 'Stockfish (Black) is thinking…');
+  else if (busy) say(oppName === 'the fly' ? 'The fly is thinking…' : 'Stockfish is thinking…');
+  else say(game.turn() === human ? (game.inCheck() ? 'Your move — you are in check.' : 'Your move.') : `${oppName === 'the fly' ? 'Fly' : 'Stockfish'} to move.`);
+  $('undo').disabled = busy || duel || game.history().length < 1; $('side').textContent = human === 'w' ? 'Play as Black' : 'Play as White';
+  $('new').disabled = busy && !duel; $('side').disabled = busy;
 }
 function onSquare(sq) {
-  if (busy || game.isGameOver() || game.turn() !== human) return;
+  if (busy || duel || game.isGameOver() || game.turn() !== human) return;
   const pc = game.get(sq);
   if (sel) {
     const mv = game.moves({ square: sel, verbose: true }).find(m => m.to === sq);
-    if (mv) { game.move({ from: sel, to: sq, promotion: mv.promotion ? 'q' : undefined }); lastMove = mv; sel = null; render(); setTimeout(flyMove, 30); return; }
+    if (mv) { game.move({ from: sel, to: sq, promotion: mv.promotion ? 'q' : undefined }); lastMove = mv; sel = null; render(); setTimeout(opponentMove, 30); return; }
   }
   sel = pc && pc.color === human ? sq : null; render();
 }
-$('new').onclick = () => { if (busy) return; game = new Chess(); lastMove = null; sel = null; $('cands').textContent = '—'; render(); if (human === 'b') flyMove(); };
+$('new').onclick = () => { if (busy && !duel) return; duel = false; duelOver = false; $('duel').textContent = 'Watch Fly vs Stockfish'; game = new Chess(); lastMove = null; sel = null; $('cands').textContent = '—'; render(); if (human === 'b') setTimeout(opponentMove, 30); };
 $('side').onclick = () => { if (busy) return; human = human === 'w' ? 'b' : 'w'; $('new').onclick(); };
+$('duel').onclick = () => { if (duel) { duel = false; return; } if (busy) return; runDuel(); };
+$('opp').onchange = () => { if (opp().startsWith('sf-')) stockfish().catch(e => say(`<span class="err">${e.message}</span>`)); };
 $('undo').onclick = () => { if (busy) return; game.undo(); if (game.turn() !== human) game.undo(); lastMove = null; sel = null; render(); };
 
 // ---------- boot ----------
@@ -415,9 +515,19 @@ $('undo').onclick = () => { if (busy) return; game.undo(); if (game.turn() !== h
   const lim = adapter.limits; const device = await adapter.requestDevice({ requiredLimits: {
     maxStorageBufferBindingSize: Math.min(lim.maxStorageBufferBindingSize, 256 << 20), maxBufferSize: Math.min(lim.maxBufferSize, 256 << 20),
     maxStorageBuffersPerShaderStage: Math.max(lim.maxStorageBuffersPerShaderStage >= 13 ? 13 : 8, 8) } }).catch(e => fail('WebGPU device: ' + e.message));
-  device.lost.then(i => say(`<span class="err">GPU device lost: ${i.message}</span>`));
+  const onLost = async (i) => {                             // rebuild the brain on a fresh device, with shorter submissions
+    say(`<span class="err">GPU reset (${i.reason || 'device lost'}) — re-wiring the brain…</span>`);
+    try {
+      const ad = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+      const dv = await ad.requestDevice({ requiredLimits: { maxStorageBufferBindingSize: Math.min(ad.limits.maxStorageBufferBindingSize, 256 << 20), maxBufferSize: Math.min(ad.limits.maxBufferSize, 256 << 20) } });
+      dv.lost.then(onLost);
+      const old = brain; brain = new Brain(dv, bundle); brain.cost = old.cost; brain.targetMs = Math.max(60, (old.targetMs || 250) / 2); brain.batchCap = Math.max(4, Math.floor((old.batchCap || 72) / 2));
+      busy = false; say('The brain is back. Your move.');
+    } catch (e) { say(`<span class="err">Could not recover the GPU: ${e.message}. Reload the page.</span>`); }
+  };
+  device.lost.then(onLost);
   ovmsg.textContent = 'Downloading the brain (159 MB, cached after the first visit)…';
-  const bundle = await loadBundle();
+  bundle = await loadBundle();
   meta = bundle['meta.json']; moveIndex = new Map(meta.moves.map((m, i) => [m, i]));
   ovmsg.textContent = 'Wiring 15.1 million synapses into your GPU…'; ovdetail.textContent = '';
   await new Promise(r => setTimeout(r, 20));
@@ -431,13 +541,19 @@ $('undo').onclick = () => { if (busy) return; game.undo(); if (game.turn() !== h
     const sc = Math.min((cv.width - 8) / (maxx - minx), (cv.height - 8) / (maxy - miny));
     posXY = { x: new Int16Array(n), y: new Int16Array(n) };
     for (let i = 0; i < n; i++) { posXY.x[i] = 4 + (pxy[2 * i] - minx) * sc; posXY.y[i] = 4 + (pxy[2 * i + 1] - miny) * sc; } }
+  ovmsg.textContent = 'Measuring your GPU…';
+  let cal; try { cal = await brain.calibrate(features(canonical(new Chess()).fen)); } catch (e) { fail('GPU calibration: ' + e.message); }
+  // batch cap so a whole lookahead stays responsive: aim for ≤ ~6 s per fly move
+  const perPosMs = cal.b * brain.T + cal.a * brain.T / 8;
+  brain.batchCap = Math.max(4, Math.min(72, Math.floor(6000 / Math.max(perPosMs, 1))));
   ovmsg.textContent = 'Checking the fly against the reference implementation…';
   const t0 = performance.now(); let v; try { v = await verify(); } catch (e) { fail('Verification crashed: ' + e.message); }
   const dt = (performance.now() - t0) / meta.tests.length;
   $('meta').innerHTML = `${meta.N.toLocaleString()} neurons · ${meta.E.toLocaleString()} synapses · ${meta.T} settle steps · leak ${meta.leak}<br>encoder 780→${meta.n_in} photoreceptors · readout ${meta.n_ro.toLocaleString()} central + descending neurons → ${meta.n_moves} moves + ${meta.n_bins} value bins<br>checkpoint: ${meta.checkpoint}<br>` +
-    `<span class="${v.ok ? 'ok' : 'err'}">${v.ok ? 'verified' : 'MISMATCH'} against torch on ${meta.tests.length} positions — max logit error ${v.maxErr.toFixed(3)}</span> · ${dt.toFixed(0)} ms per forward pass<br>` + v.lines.map(l => l.replace(/</g, '&lt;')).join('<br>');
+    `<span class="${v.ok ? 'ok' : 'err'}">${v.ok ? 'verified' : 'MISMATCH'} against torch on ${meta.tests.length} positions — max logit error ${v.maxErr.toFixed(3)}</span> · ${dt.toFixed(0)} ms per forward pass · settle ≈ ${cal.a.toFixed(0)} + ${cal.b.toFixed(1)}·B ms per step → ${Math.ceil(brain.N / brain.chunkRows(32))} submission(s) per step at B=32, batch cap ${brain.batchCap}<br>` + v.lines.map(l => l.replace(/</g, '&lt;')).join('<br>');
   if (!v.ok) fail('The GPU brain does not match the reference implementation. Details in "The brain" panel. ' + v.lines.join(' | '));
   ov.style.display = 'none'; render();
+  window.flymate = { brain: () => brain, game: () => game, features, canonical, Chess };   // debug hook
 })().catch(e => { console.error(e); if (ov.style.display !== 'none') ovmsg.innerHTML = `<span class="err">${e.message}</span>`; });
 </script>
 </body>
