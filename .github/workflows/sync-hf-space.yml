@@ -1,0 +1,32 @@
+name: Sync to Hugging Face Space
+
+# Mirrors the single-file app to https://huggingface.co/spaces/naklitechie/flymate
+# (sdk: static). Weights are fetched at runtime from naklitechie/flymate-chess, so
+# only index.html ships. The Space's README.md is HF metadata and is never copied.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - index.html
+      - .github/workflows/sync-hf-space.yml
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Push to HF Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git clone https://NakliTechie:$HF_TOKEN@huggingface.co/spaces/naklitechie/flymate /tmp/hf-space
+          cp index.html /tmp/hf-space/
+          cd /tmp/hf-space
+          git config user.email "chirag@naklitechie.com"
+          git config user.name "NakliTechie"
+          git add index.html
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "Sync from GitHub $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
