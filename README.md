@@ -9,8 +9,10 @@ Only an encoder, one positive gain per synapse, per-neuron homeostasis and a dec
 trained (on Stockfish-annotated Lichess positions); the wiring and its excitatory/inhibitory
 signs are the fly's. The network recovers Stockfish's top move 29.8% of the time on held-out
 positions (ChessFly, the original recipe by Maxime Labonne: 30.4%) — 3 epochs on 4.4M Lichess
-positions with soft multi-PV policy targets. In the browser the fly looks
-one move ahead by pushing every reply through the whole brain in a single batched pass.
+positions with soft multi-PV policy targets. In the browser the fly searches
+three plies ahead (its moves, the opponent's best replies by policy, its own answers), pushing
+every position through the whole brain in batched passes; the search width adapts to the GPU
+so a move takes about 3 s. It has beaten Stockfish skill 1 from the app.
 
 ## How it works
 - `index.html` is the entire app: WebGPU compute shaders do a CSR sparse matrix–vector settle
