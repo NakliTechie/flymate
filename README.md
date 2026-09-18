@@ -7,8 +7,9 @@ synapses, wired exactly as reconstructed — running on your own GPU in one brow
 
 Only an encoder, one positive gain per synapse, per-neuron homeostasis and a decoder were
 trained (on Stockfish-annotated Lichess positions); the wiring and its excitatory/inhibitory
-signs are the fly's. The network recovers Stockfish's top move 28.3% of the time on held-out
-positions (ChessFly, the original recipe by Maxime Labonne: 30.4%). In the browser the fly looks
+signs are the fly's. The network recovers Stockfish's top move 29.8% of the time on held-out
+positions (ChessFly, the original recipe by Maxime Labonne: 30.4%) — 3 epochs on 4.4M Lichess
+positions with soft multi-PV policy targets. In the browser the fly looks
 one move ahead by pushing every reply through the whole brain in a single batched pass.
 
 ## How it works

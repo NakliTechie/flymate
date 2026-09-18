@@ -79,7 +79,7 @@ select{background:#1f2530;color:var(--fg);border:1px solid var(--line);border-ra
   </div>
 </main>
 <footer>
-  Recipe and idea: <a href="https://huggingface.co/mlabonne/chessfly">ChessFly</a> by Maxime Labonne. Connectome: FlyWire FAFB v783 (Dorkenwald et al. 2024; Schlegel et al. 2024; signs from Shiu et al. 2024) — FlyWire's non-commercial terms apply to anything derived from the graph. Labels: Lichess evaluations (CC0). Only an encoder, one positive gain per synapse, per-neuron homeostasis and a decoder were trained; the wiring and its excitatory/inhibitory signs are the fly's. This network recovers Stockfish's top move 28% of the time on held-out positions (ChessFly: 30%). Source: <a href="https://github.com/NakliTechie/flymate">NakliTechie/flymate</a>. A <a href="https://naklitechie.github.io/">NakliTechie</a> single-file app.
+  Recipe and idea: <a href="https://huggingface.co/mlabonne/chessfly">ChessFly</a> by Maxime Labonne. Connectome: FlyWire FAFB v783 (Dorkenwald et al. 2024; Schlegel et al. 2024; signs from Shiu et al. 2024) — FlyWire's non-commercial terms apply to anything derived from the graph. Labels: Lichess evaluations (CC0). Only an encoder, one positive gain per synapse, per-neuron homeostasis and a decoder were trained; the wiring and its excitatory/inhibitory signs are the fly's. This network recovers Stockfish's top move 29.8% of the time on held-out positions (ChessFly: 30.4%). Source: <a href="https://github.com/NakliTechie/flymate">NakliTechie/flymate</a>. A <a href="https://naklitechie.github.io/">NakliTechie</a> single-file app.
 </footer>
 
 <script type="module">
@@ -96,10 +96,12 @@ let brainReadyResolve; const brainReady = new Promise(r => brainReadyResolve = r
 // ---------- bundle ----------
 // Weights live on Hugging Face (naklitechie/flymate-chess). `?weights=local` uses ./weights/chess/ for development.
 const HF = 'https://huggingface.co/naklitechie/flymate-chess/resolve/main/';
-const W = new URLSearchParams(location.search).get('weights') === 'local' ? 'weights/chess/' : HF;
+const wq = new URLSearchParams(location.search).get('weights');
+const W = wq === 'local' ? 'weights/chess/' : wq && wq.startsWith('local:') ? `weights/${wq.slice(6)}/` : HF;
 const FILES = ['meta.json','indptr.bin','edges.idx.bin','edges.w.bin','step.bin','encoder.bin','input_idx.bin','decoder.bin','readout_idx.bin','heads.bin','pos.bin'];
 async function loadBundle() {
-  const cache = await caches.open('flymate-chess-v1').catch(() => null);   // per-viewer cache of the 159 MB bundle
+  caches.delete('flymate-chess-v1').catch(() => {});
+  const cache = await caches.open('flymate-chess-v2').catch(() => null);   // per-viewer cache of the 159 MB bundle
   const out = {}; let done = 0, total = 0, sizes = {};
   const EXPECT = { 'edges.idx.bin': 60.4e6, 'edges.w.bin': 30.2e6, 'decoder.bin': 42.7e6, 'encoder.bin': 17.0e6, 'step.bin': 5.5e6, 'heads.bin': 2.1e6 };
   total = FILES.reduce((a, f) => a + (EXPECT[f] || 0.6e6), 0);
