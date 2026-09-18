@@ -67,6 +67,13 @@ select{background:#1f2530;color:var(--fg);border:1px solid var(--line);border-ra
           <option value="sf-20">Stockfish · skill 20</option>
         </select>
       </label>
+      <label class="tog">think
+        <select id="think">
+          <option value="3000" selected>~3 s</option>
+          <option value="10000">~10 s</option>
+          <option value="30000">~30 s</option>
+        </select>
+      </label>
       <button id="duel">Watch Fly vs Stockfish</button>
     </div>
     <div class="moves" id="moves"></div>
@@ -410,14 +417,23 @@ const nodeOf = (g) => { const c = canonical(g); const term = g.isCheckmate() ? 0
 const topK = (node, k) => [...node.prior.entries()].sort((a, b) => b[1] - a[1]).slice(0, k).map(([u]) => u);
 const mv = u => ({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] || undefined });
 
-function planSearch(nLegal) {                                   // widths from the GPU budget (~3 s per move)
+const TACTICAL_EXTRA = 2;                                       // captures/checks kept at each level beyond the top-k by policy
+function planSearch(nLegal) {
+  // positions the GPU can do in the chosen thinking time, then the deepest depth (≤5) that still keeps width ≥ 3, else ≥ 2
   const perPos = brain.cost ? brain.cost.b * brain.T + brain.cost.a * brain.T / 24 : 10;
-  const budget = Math.max(12, Math.min(700, Math.round(2400 / perPos)));
+  const budget = Math.max(12, Math.min(6000, Math.round((+$('think').value * 0.8) / perPos)));
   const L1 = Math.min(nLegal, budget >= 60 ? 40 : Math.max(4, Math.floor(budget / 2)));
-  const rem = budget - L1; let best = { depth: 1, k2: 0, k3: 0, n: L1 };
-  if (rem >= L1) { best = { depth: 2, k2: Math.min(8, Math.floor(rem / L1)), k3: 0 }; best.n = L1 + L1 * best.k2; }
-  for (let k2 = 1; k2 <= 6; k2++) { const k3 = Math.min(k2, Math.floor(rem / (L1 * k2)) - 1); if (k3 >= 1 && k2 * k3 > (best.k2 || 0) * (best.k3 || 0)) best = { depth: 3, k2, k3, n: L1 + L1 * k2 + L1 * k2 * k3 }; }
-  return { ...best, L1, budget };
+  const rem = budget - L1;
+  const cost = (D, k) => { let n = 0, w = L1; for (let d = 2; d <= D; d++) { w *= k + 0.5; n += w; } return n; };   // +0.5 ≈ tactical extras
+  for (let D = 5; D >= 3; D--) { let k = 6; while (k >= 2 && cost(D, k) > rem) k--; if (k >= 2) return { depth: D, k, L1, budget }; }   // deepest depth with width ≥ 2 (+ tactical extras)
+  if (rem >= L1) return { depth: 2, k: Math.min(8, Math.floor(rem / L1)), L1, budget };
+  return { depth: 1, k: 0, L1, budget };
+}
+const tactical = (g, uci) => { const m = g.moves({ verbose: true }).find(x => uciOf(x) === uci); return m && (m.captured || /[+#]/.test(m.san)); };
+function replies(g, node, k) {                                   // top-k by the node's own policy + up to TACTICAL_EXTRA captures/checks
+  const top = topK(node, k); const set = new Set(top); let extra = 0;
+  for (const [u] of [...node.prior.entries()].sort((a, b) => b[1] - a[1])) { if (extra >= TACTICAL_EXTRA) break; if (!set.has(u) && tactical(g, u)) { set.add(u); extra++; } }
+  return [...set];
 }
 
 async function flyMove() {
@@ -427,46 +443,39 @@ async function flyMove() {
   busy = true; render();
   const t0 = performance.now(); const mode = opp();
   const root = nodeOf(game); const legal = game.moves({ verbose: true });
-  const plan = mode === 'fly-instinct' ? { depth: 0, n: 1 } : mode === 'fly-look' ? { depth: 1, L1: legal.length, n: 1 + legal.length } : planSearch(legal.length);
+  const plan = mode === 'fly-instinct' ? { depth: 0, n: 1 } : mode === 'fly-look' ? { depth: 1, L1: legal.length, k: 0 } : planSearch(legal.length);
   const hroot = await evalNodes([root], true);
   let scored, positions = 1;
   if (plan.depth === 0) {
     scored = legal.map(m => ({ m, score: root.prior.get(uciOf(m)), win: root.win, prior: root.prior.get(uciOf(m)) }));
   } else {
-    // level 1 — my candidate moves (all, or top-L1 by prior on slow GPUs)
+    // level 1 — my candidate moves (all, or top-L1 by prior on slow GPUs); deeper levels: top-k by policy + tactical extras
     const cands = plan.L1 >= legal.length ? legal : topK(root, plan.L1).map(u => legal.find(m => uciOf(m) === u));
-    const L1 = cands.map(m => { game.move(m); const n = nodeOf(game); game.undo(); return { m, node: n, uci: uciOf(m) }; });
-    await evalNodes(L1.map(c => c.node)); positions += L1.length;
-    const v1 = c => c.node.term !== null ? c.node.term : c.node.win;                 // P(opponent wins) after my move
-    let value = new Map(L1.map(c => [c.uci, 1 - v1(c)]));
-    if (plan.depth >= 2) {
-      // level 2 — opponent's top-k2 replies; my value after (m, r) = P(I win) at that node
-      const L2 = [];
-      for (const c of L1) { if (c.node.term !== null) continue; game.move(c.m);
-        for (const r of topK(c.node, plan.k2)) { game.move(mv(r)); L2.push({ parent: c, r, node: nodeOf(game) }); game.undo(); }
-        game.undo(); }
-      await evalNodes(L2.map(g => g.node)); positions += L2.length;
-      const v2 = new Map();                                                          // (m,r) → P(I win)
-      for (const g of L2) v2.set(g, g.node.term !== null ? g.node.term : g.node.win);
-      if (plan.depth >= 3) {
-        // level 3 — my top-k3 replies to each (m, r); value = max over m2 of P(I win) = 1 − P(opp wins at leaf)
-        const L3 = [];
-        for (const g of L2) { if (g.node.term !== null) continue; game.move(g.parent.m); game.move(mv(g.r));
-          for (const m2 of topK(g.node, plan.k3)) { game.move(mv(m2)); L3.push({ g, node: nodeOf(game) }); game.undo(); }
-          game.undo(); game.undo(); }
-        await evalNodes(L3.map(l => l.node)); positions += L3.length;
-        const best3 = new Map();
-        for (const l of L3) { const v = l.node.term !== null ? 1 - l.node.term : 1 - l.node.win; best3.set(l.g, Math.max(best3.get(l.g) ?? -1, v)); }
-        for (const g of L2) if (best3.has(g)) v2.set(g, Math.max(v2.get(g), best3.get(g)) * 0.5 + best3.get(g) * 0.5);   // blend static + searched
+    let level = cands.map(m => { game.move(m); const n = nodeOf(game); game.undo(); return { path: [m], node: n, parent: null, children: [] }; });
+    const L1 = level;
+    await evalNodes(level.map(e => e.node)); positions += level.length;
+    for (let d = 2; d <= plan.depth; d++) {
+      const next = [];
+      for (const e of level) {
+        if (e.node.term !== null) continue;
+        for (const m of e.path) game.move(m);
+        for (const u of replies(game, e.node, plan.k)) { game.move(mv(u)); const child = { path: [...e.path, mv(u)], node: nodeOf(game), parent: e, children: [] }; e.children.push(child); next.push(child); game.undo(); }
+        for (let i = 0; i < e.path.length; i++) game.undo();
       }
-      for (const c of L1) { const rs = L2.filter(g => g.parent === c); if (rs.length) value.set(c.uci, Math.min(...rs.map(g => v2.get(g)))); }   // opponent picks my worst
+      if (!next.length) break;
+      await evalNodes(next.map(e => e.node)); positions += next.length;
+      level = next;
+      if (performance.now() - t0 > +$('think').value * 1.5) break;    // hard stop if the GPU is slower than calibrated
     }
-    scored = L1.map(c => ({ m: c.m, win: value.get(c.uci), prior: root.prior.get(c.uci), score: value.get(c.uci) + 0.05 * root.prior.get(c.uci) }));
+    // backup: value(e) = P(mover at e wins); internal nodes blend the static estimate with the best child line
+    const value = e => { if (e.node.term !== null) return e.node.term; if (!e.children.length) return e.node.win;
+      const searched = Math.max(...e.children.map(c => 1 - value(c))); return 0.3 * e.node.win + 0.7 * searched; };
+    scored = L1.map(e => { const v = 1 - value(e); const u = uciOf(e.path[0]); return { m: e.path[0], win: v, prior: root.prior.get(u), score: v + 0.05 * root.prior.get(u) }; });
   }
   scored.sort((a, b) => b.score - a.score);
   const pick = scored[0].m; game.move(pick); lastMove = pick;
   const ms = performance.now() - t0;
-  $('timing').textContent = `depth ${plan.depth} · ${positions} position${positions > 1 ? 's' : ''} through the whole brain in ${ms < 1000 ? ms.toFixed(0) + ' ms' : (ms / 1000).toFixed(1) + ' s'} · fly's win estimate ${(root.win * 100).toFixed(0)}%`;
+  $('timing').textContent = `depth ${plan.depth}${plan.k ? ' · width ' + plan.k + '+' + TACTICAL_EXTRA : ''} · ${positions} position${positions > 1 ? 's' : ''} through the whole brain in ${ms < 1000 ? ms.toFixed(0) + ' ms' : (ms / 1000).toFixed(1) + ' s'} · fly's win estimate ${(root.win * 100).toFixed(0)}%`;
   $('cands').innerHTML = scored.slice(0, 5).map((s, i) => `${i === 0 ? '<b>' : ''}${s.m.san.padEnd(7)} ${plan.depth ? 'win ' + (s.win * 100).toFixed(0).padStart(3) + '%' : ''}  prior ${(s.prior * 100).toFixed(0).padStart(3)}%${i === 0 ? '</b>' : ''}`).join('<br>');
   if (hroot) drawBrain(hroot);
   busy = false; sel = null; render();
@@ -485,6 +494,7 @@ async function engineMove() {
 }
 const opponentMove = () => opp().startsWith('sf-') ? engineMove() : flyMove();
 window.__plan = () => brain && planSearch(30);
+$('think').onchange = () => {};
 
 async function runDuel() {
   duel = true; duelOver = false; $('duel').textContent = 'Stop'; game = new Chess(); lastMove = null; sel = null; human = 'w'; render();
