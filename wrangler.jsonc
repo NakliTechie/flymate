@@ -1,0 +1,8 @@
+{
+  // Cloudflare Workers Builds deploys this on every push to main (git-connected in the dashboard).
+  // Static assets only: index.html at the repo root; .assetsignore keeps the repo's prose out of the bundle.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flymate",
+  "compatibility_date": "2026-09-01",
+  "assets": { "directory": "./", "not_found_handling": "404-page", "html_handling": "auto-trailing-slash" }
+}

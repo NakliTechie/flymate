@@ -1,0 +1,10 @@
+.git
+.github
+.claude
+.gitignore
+.assetsignore
+README.md
+LICENSE
+wrangler.jsonc
+weights
+node_modules
