@@ -25,7 +25,14 @@ so a move takes about 3 s. It has beaten Stockfish skill 1 from the app.
   (`web/export.py` writes the bundle).
 
 ## Go
-The same brain, trained on 9×9 Go with a retinotopic encoder, lands here next.
+`go.html` — the same brain trained on 9×9 Go (KataGo g170 self-play labels, CC0) with a
+**retinotopic** encoder: each board point drives the ~130 photoreceptors beneath it on the fly's
+eyes. Held-out: 30.1% agreement with KataGo's most-visited move (random 3.5%), 74.9% final-ownership
+accuracy per point (coin flip 50%); the value head never learned, so the fly plays on policy alone
+and its territory estimate is drawn on the board. Weights:
+[naklitechie/flymate-go](https://huggingface.co/naklitechie/flymate-go) (graph files shared with
+the chess bundle, so a chess visitor downloads only 79 MB more). Rules: area scoring, komi 7,
+simple ko, no suicide.
 
 ## Credits and licence
 Recipe: [ChessFly](https://huggingface.co/mlabonne/chessfly) (Maxime Labonne). Connectome:

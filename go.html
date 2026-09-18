@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlyMate Go — are you smarter than a fly?</title>
+<meta name="description" content="Play 9×9 Go against the complete fruit-fly connectome — the board projected onto the fly's own photoreceptors, 15.1 million synapses settling on your GPU in this tab.">
+<style>
+:root{--bg:#0f1115;--panel:#161a21;--line:#262c36;--fg:#e6e8ec;--dim:#8b93a1;--acc:#f2c14e;--light:#e9dcc4;--dark:#a67c52;--sel:rgba(242,193,78,.55);--dot:rgba(242,193,78,.35);--bad:#ff6b6b;--ok:#7bd88f}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+header{padding:22px 20px 8px;max-width:1080px;margin:0 auto}
+h1{margin:0;font-size:26px;letter-spacing:-.01em}h1 span{color:var(--acc)}
+.sub{color:var(--dim);margin:4px 0 0;font-size:14px}
+main{max-width:1080px;margin:0 auto;padding:12px 20px 40px;display:grid;grid-template-columns:minmax(280px,520px) minmax(280px,1fr);gap:22px;align-items:start}
+@media(max-width:760px){main{grid-template-columns:1fr}}
+.goboard{width:100%;aspect-ratio:1;display:block;border-radius:6px;user-select:none;touch-action:manipulation}
+.sq{display:flex;align-items:center;justify-content:center;font-size:min(7vw,44px);line-height:1;position:relative;cursor:pointer;min-height:0;overflow:hidden}
+.sq.l{background:var(--light)}.sq.d{background:var(--dark)}
+.sq.sel{box-shadow:inset 0 0 0 4px var(--sel)}.sq.last{box-shadow:inset 0 0 0 3px rgba(242,193,78,.7)}
+.sq.dot::after{content:"";position:absolute;width:26%;height:26%;border-radius:50%;background:var(--dot)}
+.sq.cap::after{content:"";position:absolute;inset:6%;border-radius:50%;border:4px solid var(--dot)}
+.sq .w{color:#fff;text-shadow:0 0 2px #000,0 0 3px #000}.sq .b{color:#111}
+.sq .coord{position:absolute;font-size:10px;color:rgba(0,0,0,.45);left:3px;top:2px}
+.sq .coordf{position:absolute;font-size:10px;color:rgba(0,0,0,.45);right:3px;bottom:1px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:14px}
+.panel h2{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+.status{font-size:17px;min-height:26px}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+button{background:#1f2530;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:7px 12px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--acc)}button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--acc);color:#111;border-color:var(--acc);font-weight:600}
+.cands{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.7}
+.cands b{color:var(--acc)}
+.bar{height:6px;background:#0b0d11;border-radius:3px;overflow:hidden;margin:6px 0}.bar i{display:block;height:100%;background:var(--acc);width:0}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:var(--dim)}
+.moves{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:var(--dim);max-height:110px;overflow:auto;line-height:1.6}
+canvas#brain{width:100%;height:auto;display:block;background:#0b0d11;border-radius:6px}
+.err{color:var(--bad)}.ok{color:var(--ok)}
+footer{max-width:1080px;margin:0 auto;padding:0 20px 40px;color:var(--dim);font-size:12.5px;line-height:1.6}
+#loader{margin-top:8px}#loader .bar{margin:4px 0}
+label.tog{display:inline-flex;align-items:center;gap:6px;color:var(--dim);font-size:13px;cursor:pointer}
+select{background:#1f2530;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit}
+</style>
+</head>
+<body>
+<header>
+  <h1>FlyMate <span>·</span> Go <span>·</span> are you smarter than a fly?</h1>
+  <p class="sub">9×9 Go against the complete FlyWire fruit-fly connectome. The board is projected onto the fly's two eyes — each point lights up the ~130 photoreceptors beneath it — and 15,091,983 synapses settle on your GPU, in this tab. Nothing leaves your device. <a href="./">Chess is here.</a></p>
+</header>
+<main>
+  <div>
+    <svg class="goboard" id="board" viewBox="0 0 100 100"></svg>
+    <div class="row">
+      <button id="new" class="primary">New game</button>
+      <button id="side">Play as White</button>
+      <button id="pass">Pass</button>
+      <button id="undo">Undo</button>
+      <label class="tog"><input type="checkbox" id="ownov" checked> show the fly's territory estimate</label>
+      <button id="duel">Watch the fly play itself</button>
+    </div>
+    <div class="moves" id="moves"></div>
+  </div>
+  <div>
+    <div class="panel"><h2>Status</h2><div class="status" id="status">Your move (Black).</div><div class="mono" id="timing"></div>
+      <div id="loader"><div class="mono" id="ovmsg">Waking the fly…</div><div class="bar"><i id="ovbar"></i></div><div class="mono" id="ovdetail"></div></div></div>
+    <div class="panel"><h2>What the fly considered</h2><div class="cands" id="cands">—</div></div>
+    <div class="panel"><h2>Brain activity (last move)</h2><canvas id="brain" width="560" height="420"></canvas><div class="mono" id="brainnote">Each dot is one neuron at its real position in the fly's brain; brightness is its activity after the board settled for 5 steps.</div></div>
+    <div class="panel"><h2>The brain</h2><div class="mono" id="meta"></div></div>
+  </div>
+</main>
+<footer>
+  Same brain as the chess page, trained on 9×9 Go: KataGo g170 self-play positions (CC0) — the fly learned to agree with KataGo's most-visited move 30% of the time (random: 3.5%) and to read final territory at 75% per point (coin flip: 50%). Its sense of who is winning never trained, so it plays on instinct alone. Encoder: the 10,855 photoreceptors are cut into a 9×9 grid on each eye's sheet; each board point drives its own patch. Connectome: FlyWire FAFB v783 (Dorkenwald et al. 2024; Schlegel et al. 2024; signs from Shiu et al. 2024) — non-commercial terms apply. Idea: <a href="https://huggingface.co/mlabonne/chessfly">ChessFly</a> by Maxime Labonne. Source: <a href="https://github.com/NakliTechie/flymate">NakliTechie/flymate</a>.
+</footer>
+
+<script type="module">
+// ---------- UI handles ----------
+const $ = id => document.getElementById(id);
+const ovmsg = $('ovmsg'), ovbar = $('ovbar'), ovdetail = $('ovdetail');
+const say = (t, cls) => { $('status').innerHTML = t; $('status').className = 'status ' + (cls || ''); };
+let brainError = null;
+const fail = (t) => { brainError = t; ovmsg.innerHTML = `<span class="err">${t}</span>`; ovbar.style.width = '0'; throw new Error(t); };
+let brainReadyResolve; const brainReady = new Promise(r => brainReadyResolve = r);
+
+// ---------- bundle: graph files from the chess repo (shared), Go files from flymate-go ----------
+const HF_GRAPH = 'https://huggingface.co/naklitechie/flymate-chess/resolve/main/';
+const HF_GO = 'https://huggingface.co/naklitechie/flymate-go/resolve/main/';
+const wq = new URLSearchParams(location.search).get('weights');
+const SRC = f => wq === 'local' ? (GRAPH_FILES.includes(f) ? 'weights/chess/' : 'weights/go9/') + f : (GRAPH_FILES.includes(f) ? HF_GRAPH : HF_GO) + f;
+const GRAPH_FILES = ['indptr.bin', 'edges.idx.bin', 'input_idx.bin', 'readout_idx.bin', 'pos.bin'];
+const FILES = ['meta.json', ...GRAPH_FILES, 'edges.w.bin', 'step.bin', 'encoder.bin', 'decoder.bin', 'heads.bin'];
+const EXPECT = { 'edges.idx.bin': 60.4e6, 'edges.w.bin': 30.2e6, 'decoder.bin': 42.7e6, 'step.bin': 5.5e6 };
+async function loadBundle() {
+  const cacheGo = await caches.open('flymate-go-v1').catch(() => null), cacheChess = await caches.open('flymate-chess-v2').catch(() => null);
+  const out = {}; let done = 0; const total = FILES.reduce((a, f) => a + (EXPECT[f] || 0.3e6), 0);
+  for (const f of FILES) {
+    const url = SRC(f), cache = GRAPH_FILES.includes(f) ? cacheChess : cacheGo;
+    let res = cache && await cache.match(url);
+    if (!res) {
+      const r = await fetch(url); if (!r.ok) fail(`could not fetch ${f} (${r.status})`);
+      const size = +r.headers.get('content-length') || EXPECT[f] || 0.3e6;
+      const reader = r.body.getReader(); const chunks = []; let got = 0;
+      for (;;) { const { value, done: d } = await reader.read(); if (d) break; chunks.push(value); got += value.length;
+        ovbar.style.width = (100 * (done + got) / total).toFixed(1) + '%'; ovdetail.textContent = `${f}  ${(got / 1e6).toFixed(1)} / ${(size / 1e6).toFixed(1)} MB`; }
+      res = new Response(new Blob(chunks), { headers: { 'content-type': f.endsWith('.json') ? 'application/json' : 'application/octet-stream' } });
+      if (cache) await cache.put(url, res.clone());
+    } else ovdetail.textContent = `${f}  (cached)`;
+    out[f] = f.endsWith('.json') ? await res.json() : await res.arrayBuffer();
+    done += EXPECT[f] || 0.3e6; ovbar.style.width = (100 * done / total).toFixed(1) + '%';
+  }
+  return out;
+}
+
+// ---------- WebGPU brain ----------
+const WGSL = /* wgsl */`
+struct P { n: u32, b: u32, t: u32, nin: u32, nro: u32, d: u32, f: u32, nout: u32, leak: f32, roff: u32, rlen: u32, pad2: u32 }
+@group(0) @binding(0) var<uniform> p: P;
+@group(0) @binding(1) var<storage, read> indptr: array<u32>;
+@group(0) @binding(2) var<storage, read> eidx: array<u32>;
+@group(0) @binding(3) var<storage, read> ew: array<u32>;       // f16 pairs
+@group(0) @binding(4) var<storage, read> step: array<f32>;     // [T][2][N]
+@group(0) @binding(5) var<storage, read> inslot: array<u32>;   // N: input slot or 0xffffffff
+@group(0) @binding(6) var<storage, read> uin: array<f32>;      // [nin][B]
+@group(0) @binding(7) var<storage, read> hin: array<f32>;      // [N][B]
+@group(0) @binding(8) var<storage, read_write> hout: array<f32>;
+const BMAX: u32 = 16u;
+fn w16(e: u32) -> f32 { let v = unpack2x16float(ew[e >> 1u]); return select(v.x, v.y, (e & 1u) == 1u); }
+@compute @workgroup_size(64) fn settle(@builtin(global_invocation_id) g: vec3<u32>) {
+  if (g.x >= p.rlen) { return; }
+  let row = g.x + p.roff; if (row >= p.n) { return; }
+  var acc: array<f32, BMAX>;
+  for (var b = 0u; b < p.b; b++) { acc[b] = 0.0; }
+  let e0 = indptr[row]; let e1 = indptr[row + 1u];
+  for (var e = e0; e < e1; e++) {
+    let w = w16(e); let base = eidx[e] * p.b;
+    for (var b = 0u; b < p.b; b++) { acc[b] += w * hin[base + b]; }
+  }
+  let slot = inslot[row];
+  let A = step[(p.t * 2u) * p.n + row]; let Bc = step[(p.t * 2u + 1u) * p.n + row];
+  for (var b = 0u; b < p.b; b++) {
+    var pre = acc[b]; if (slot != 0xffffffffu) { pre += uin[slot * p.b + b]; }
+    let h = hin[row * p.b + b];
+    hout[row * p.b + b] = (1.0 - p.leak) * h + p.leak * max(A * pre + Bc, 0.0);
+  }
+}
+@compute @workgroup_size(64) fn clear(@builtin(global_invocation_id) g: vec3<u32>) {   // one thread per row: N·B/64 workgroups would exceed the 65535 dispatch limit at B ≥ 31
+  if (g.x >= p.n) { return; }
+  for (var b = 0u; b < p.b; b++) { hout[g.x * p.b + b] = 0.0; }
+}
+`;
+const WGSL2 = /* wgsl */`
+struct P { n: u32, b: u32, t: u32, nin: u32, nro: u32, d: u32, f: u32, nout: u32, leak: f32, roff: u32, rlen: u32, pad2: u32 }
+@group(0) @binding(0) var<uniform> p: P;
+@group(0) @binding(1) var<storage, read> encw: array<f32>;     // [nin][3] gain per plane   (retinotopic: point[j] fixed by the eye)
+@group(0) @binding(2) var<storage, read> encb: array<f32>;     // [nin] bias, then u32 point[nin] packed after it (see encpt)
+@group(0) @binding(3) var<storage, read> x: array<f32>;        // [B][3][81] planes: mover, opponent, ko
+@group(0) @binding(4) var<storage, read_write> uin: array<f32>;// [nin][B]
+@group(0) @binding(5) var<storage, read> decw: array<u32>;     // f16 [D][nro]
+@group(0) @binding(6) var<storage, read> decb: array<f32>;
+@group(0) @binding(7) var<storage, read> roidx: array<u32>;
+@group(0) @binding(8) var<storage, read> h: array<f32>;        // [N][B]
+@group(0) @binding(9) var<storage, read_write> z: array<f32>;  // [B][D]
+@group(0) @binding(10) var<storage, read> headw: array<u32>;   // f16 [nout][D]
+@group(0) @binding(11) var<storage, read> headb: array<f32>;
+@group(0) @binding(12) var<storage, read_write> out: array<f32>; // [B][nout]
+@group(0) @binding(13) var<storage, read_write> hroot: array<f32>; // [N] slice b=0
+fn f16at(a: ptr<storage, array<u32>, read>, i: u32) -> f32 { let v = unpack2x16float((*a)[i >> 1u]); return select(v.x, v.y, (i & 1u) == 1u); }
+@group(0) @binding(14) var<storage, read> encpt: array<u32>;   // [nin] board point per photoreceptor
+@compute @workgroup_size(64) fn encoder(@builtin(global_invocation_id) g: vec3<u32>) {
+  let id = g.x; if (id >= p.nin * p.b) { return; }
+  let j = id / p.b; let b = id % p.b; let pt = encpt[j];
+  var acc = encb[j];
+  for (var c = 0u; c < 3u; c++) { acc += encw[j * 3u + c] * x[b * p.f + c * 81u + pt]; }
+  uin[j * p.b + b] = acc;
+}
+var<workgroup> sh: array<f32, 256>;
+@compute @workgroup_size(256) fn decoder(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+  let d = wg.x; let b = wg.y; var acc = 0.0;
+  for (var k = l.x; k < p.nro; k += 256u) { acc += f16at(&decw, d * p.nro + k) * h[roidx[k] * p.b + b]; }
+  sh[l.x] = acc; workgroupBarrier();
+  for (var s = 128u; s > 0u; s >>= 1u) { if (l.x < s) { sh[l.x] += sh[l.x + s]; } workgroupBarrier(); }
+  if (l.x == 0u) { z[b * p.d + d] = max(sh[0] + decb[d], 0.0); }
+}
+@compute @workgroup_size(64) fn heads(@builtin(global_invocation_id) g: vec3<u32>) {
+  let id = g.x; if (id >= p.nout * p.b) { return; }
+  let b = id / p.nout; let o = id % p.nout;
+  var acc = headb[o];
+  for (var k = 0u; k < p.d; k++) { acc += f16at(&headw, o * p.d + k) * z[b * p.d + k]; }
+  out[b * p.nout + o] = acc;
+}
+@compute @workgroup_size(64) fn gatherRoot(@builtin(global_invocation_id) g: vec3<u32>) { if (g.x < p.n) { hroot[g.x] = h[g.x * p.b]; } }
+`;
+
+class Brain {
+  constructor(device, bundle) {
+    this.dev = device; const m = this.meta = bundle['meta.json'];
+    const N = m.N, E = m.E, T = m.T, nin = m.n_in, nro = m.n_ro, D = m.D, F = m.planes * 81, nout = m.n_moves + m.n_bins + m.n_own;
+    Object.assign(this, { N, E, T, nin, nro, D, F, nout, BMAX: 16 });
+    const buf = (data, usage = GPUBufferUsage.STORAGE) => { const size = Math.ceil(data.byteLength / 4) * 4;
+      const b = device.createBuffer({ size, usage: usage | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+      new Uint8Array(b.getMappedRange()).set(new Uint8Array(data)); b.unmap(); return b; };
+    const empty = (bytes, usage = GPUBufferUsage.STORAGE) => device.createBuffer({ size: bytes, usage: usage | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    // f16 pair arrays must be even-length in halves
+    const padHalf = ab => { if ((ab.byteLength / 2) % 2 === 0) return ab; const o = new Uint8Array(ab.byteLength + 2); o.set(new Uint8Array(ab)); return o.buffer; };
+    this.indptr = buf(bundle['indptr.bin']); this.eidx = buf(bundle['edges.idx.bin']); this.ew = buf(padHalf(bundle['edges.w.bin']));
+    this.step = buf(bundle['step.bin']);
+    const inputIdx = new Uint32Array(bundle['input_idx.bin']); const inslot = new Uint32Array(N).fill(0xffffffff); inputIdx.forEach((n, j) => inslot[n] = j);
+    this.inslot = buf(inslot.buffer);
+    const enc = bundle['encoder.bin']; this.encpt = buf(enc.slice(0, nin * 4)); this.encw = buf(enc.slice(nin * 4, nin * 4 + nin * 12)); this.encb = buf(enc.slice(nin * 4 + nin * 12));
+    const dec = bundle['decoder.bin']; this.decw = buf(padHalf(dec.slice(0, D * nro * 2))); this.decb = buf(dec.slice(D * nro * 2));
+    this.roidx = buf(bundle['readout_idx.bin']);
+    // heads: [policy 82, value 64, own 81] each as W f16 [k][D] + b f32 [k] → one [nout][D] + [nout]
+    const hd = new Uint8Array(bundle['heads.bin']); const hw = new Uint8Array(nout * D * 2), hb = new Uint8Array(nout * 4); let off = 0, wo = 0, bo = 0;
+    for (const k of [m.n_moves, m.n_bins, m.n_own]) { hw.set(hd.subarray(off, off + k * D * 2), wo); off += k * D * 2; wo += k * D * 2; hb.set(hd.subarray(off, off + k * 4), bo); off += k * 4; bo += k * 4; }
+    this.headw = buf(hw.buffer); this.headb = buf(hb.buffer);
+    this.x = empty(this.BMAX * F * 4); this.uin = empty(nin * this.BMAX * 4);
+    this.hA = empty(N * this.BMAX * 4); this.hB = empty(N * this.BMAX * 4);
+    this.z = empty(this.BMAX * D * 4); this.out = empty(this.BMAX * nout * 4); this.hroot = empty(N * 4);
+    this.read = device.createBuffer({ size: this.BMAX * nout * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    this.readRoot = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    this.uni = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const mod1 = device.createShaderModule({ code: WGSL }), mod2 = device.createShaderModule({ code: WGSL2 });
+    const pipe = (mod, entry) => device.createComputePipeline({ layout: 'auto', compute: { module: mod, entryPoint: entry } });
+    this.pSettle = pipe(mod1, 'settle'); this.pClear = pipe(mod1, 'clear');
+    this.pEnc = pipe(mod2, 'encoder'); this.pDec = pipe(mod2, 'decoder'); this.pHeads = pipe(mod2, 'heads'); this.pGather = pipe(mod2, 'gatherRoot');
+    // layout:'auto' exposes only the bindings each entry point uses — build bind groups per pipeline from a full entry list
+    const all1 = (hin, hout) => [[0, this.uni], [1, this.indptr], [2, this.eidx], [3, this.ew], [4, this.step], [5, this.inslot], [6, this.uin], [7, hin], [8, hout]];
+    const all2 = (h) => [[0, this.uni], [1, this.encw], [2, this.encb], [3, this.x], [4, this.uin], [5, this.decw], [6, this.decb], [7, this.roidx], [8, h],
+      [9, this.z], [10, this.headw], [11, this.headb], [12, this.out], [13, this.hroot], [14, this.encpt]];
+    const used = { settle: [0, 1, 2, 3, 4, 5, 6, 7, 8], clear: [0, 8], encoder: [0, 1, 2, 3, 4, 14], decoder: [0, 5, 6, 7, 8, 9], heads: [0, 9, 10, 11, 12], gatherRoot: [0, 8, 13] };
+    const bg = (pl, entries, keep) => device.createBindGroup({ layout: pl.getBindGroupLayout(0),
+      entries: entries.filter(([i]) => keep.includes(i)).map(([binding, buffer]) => ({ binding, resource: { buffer } })) });
+    this.bgAB = bg(this.pSettle, all1(this.hA, this.hB), used.settle); this.bgBA = bg(this.pSettle, all1(this.hB, this.hA), used.settle);
+    this.bgClear = bg(this.pClear, all1(this.hB, this.hA), used.clear);
+    const g2 = h => ({ enc: bg(this.pEnc, all2(h), used.encoder), dec: bg(this.pDec, all2(h), used.decoder), heads: bg(this.pHeads, all2(h), used.heads), gather: bg(this.pGather, all2(h), used.gatherRoot) });
+    this.bg2 = { A: g2(this.hA), B: g2(this.hB) };
+  }
+  setUni(b, t, roff = 0, rlen = this.N) {
+    const u = new ArrayBuffer(48); const dv = new DataView(u);
+    [this.N, b, t, this.nin, this.nro, this.D, this.F, this.nout].forEach((v, i) => dv.setUint32(i * 4, v, true)); dv.setFloat32(32, this.meta.leak, true);
+    dv.setUint32(36, roff, true); dv.setUint32(40, rlen, true);
+    this.dev.queue.writeBuffer(this.uni, 0, u);
+  }
+  /** Rows per settle dispatch so that one GPU submission stays under targetMs (mobile GPUs kill long ones). */
+  chunkRows(B) {
+    if (!this.cost) return Math.ceil(this.N / 8 / 64) * 64;      // nothing measured yet: 8 submissions per step, safe on slow GPUs
+    const stepMs = this.cost.a + this.cost.b * B;                 // predicted ms for one full-N settle step at batch B
+    const chunks = Math.max(1, Math.ceil(stepMs / this.targetMs));
+    return Math.max(1024, Math.ceil(this.N / chunks / 64) * 64);
+  }
+  /** Time two forwards to fit settle cost ≈ a + b·B (ms per step). */
+  async calibrate(x) {
+    const t = async (B) => { const t0 = performance.now(); const r = await this.forward(Array.from({ length: B }, () => x)); if (!r.logits.some(v => v !== 0)) throw new Error('GPU returned zeros (device lost?)'); return performance.now() - t0; };
+    this.targetMs = this.targetMs || 250;
+    await t(1);                                                 // warm shaders (chunked 8× until we know the cost)
+    const t1 = await t(1);
+    this.cost = { a: 0.3 * t1 / this.T, b: 0.7 * t1 / this.T };  // provisional: assume most of the B=1 time scales per column, so B=8 is chunked safely
+    const t8 = await t(8);
+    const b = Math.max(0.05, (t8 - t1) / 7 / this.T), a = Math.max(0.1, t1 / this.T - b);
+    this.cost = { a, b };
+    return { t1, t8, a, b };
+  }
+  /** xs: array of Float32Array(780) → { logits: Float32Array[B][nout], hroot?: Float32Array(N) } */
+  async forward(xs, wantRoot = false) {
+    const B = xs.length; if (B > this.BMAX) throw new Error('batch too large');
+    const xb = new Float32Array(B * this.F); xs.forEach((x, i) => xb.set(x, i * this.F));
+    this.dev.queue.writeBuffer(this.x, 0, xb);
+    const wg = n => { const w = Math.ceil(n / 64); if (w > 65535) throw new Error(`dispatch too large: ${w} workgroups`); return w; };
+    // clear hA, encoder → uin, then settle T steps ping-pong: hA→hB→hA...
+    this.setUni(B, 0);
+    let enc = this.dev.createCommandEncoder(); let pass = enc.beginComputePass();
+    pass.setPipeline(this.pClear); pass.setBindGroup(0, this.bgClear); pass.dispatchWorkgroups(wg(this.N));
+    pass.setPipeline(this.pEnc); pass.setBindGroup(0, this.bg2.A.enc); pass.dispatchWorkgroups(wg(this.nin * B));
+    pass.end(); this.dev.queue.submit([enc.finish()]);
+    let cur = 'A'; const rows = this.chunkRows(B);
+    for (let t = 0; t < this.T; t++) {
+      for (let off = 0; off < this.N; off += rows) {              // one submission per row chunk
+        const len = Math.min(rows, this.N - off);
+        this.setUni(B, t, off, len);
+        enc = this.dev.createCommandEncoder(); pass = enc.beginComputePass();
+        pass.setPipeline(this.pSettle); pass.setBindGroup(0, cur === 'A' ? this.bgAB : this.bgBA); pass.dispatchWorkgroups(wg(len));
+        pass.end(); this.dev.queue.submit([enc.finish()]);
+        if (off + rows < this.N) await this.dev.queue.onSubmittedWorkDone();   // let the driver breathe between chunks
+      }
+      cur = cur === 'A' ? 'B' : 'A';
+    }
+    const g = this.bg2[cur];
+    enc = this.dev.createCommandEncoder(); pass = enc.beginComputePass();
+    pass.setPipeline(this.pDec); pass.setBindGroup(0, g.dec); pass.dispatchWorkgroups(this.D, B);
+    pass.setPipeline(this.pHeads); pass.setBindGroup(0, g.heads); pass.dispatchWorkgroups(wg(this.nout * B));
+    if (wantRoot) { pass.setPipeline(this.pGather); pass.setBindGroup(0, g.gather); pass.dispatchWorkgroups(wg(this.N)); }
+    pass.end();
+    enc.copyBufferToBuffer(this.out, 0, this.read, 0, B * this.nout * 4);
+    if (wantRoot) enc.copyBufferToBuffer(this.hroot, 0, this.readRoot, 0, this.N * 4);
+    this.dev.queue.submit([enc.finish()]);
+    await this.read.mapAsync(GPUMapMode.READ); const logits = new Float32Array(this.read.getMappedRange().slice(0, B * this.nout * 4)); this.read.unmap();
+    let hroot = null;
+    if (wantRoot) { await this.readRoot.mapAsync(GPUMapMode.READ); hroot = new Float32Array(this.readRoot.getMappedRange().slice(0)); this.readRoot.unmap(); }
+    return { logits, hroot };
+  }
+}
+
+
+// ---------- 9×9 Go rules ----------
+const N = 9, PTS = 81, PASS = 81, KOMI = 7;
+class Go {
+  constructor() { this.board = new Int8Array(PTS); this.turn = 1; this.ko = -1; this.history = []; this.passes = 0; this.caps = { 1: 0, [-1]: 0 }; }
+  clone() { const g = new Go(); g.board = this.board.slice(); g.turn = this.turn; g.ko = this.ko; g.history = this.history.slice(); g.passes = this.passes; g.caps = { ...this.caps }; return g; }
+  static nbrs(p) { const x = p % N, y = (p / N) | 0, o = []; if (x > 0) o.push(p - 1); if (x < N - 1) o.push(p + 1); if (y > 0) o.push(p - N); if (y < N - 1) o.push(p + N); return o; }
+  group(p, board = this.board) { const c = board[p], seen = new Set([p]), stack = [p], libs = new Set(); while (stack.length) { const q = stack.pop(); for (const n of Go.nbrs(q)) { if (board[n] === 0) libs.add(n); else if (board[n] === c && !seen.has(n)) { seen.add(n); stack.push(n); } } } return { stones: seen, libs }; }
+  legal(p) { if (p === PASS) return true; if (this.board[p] !== 0 || p === this.ko) return false; const b = this.board.slice(); b[p] = this.turn; let captured = false;
+    for (const n of Go.nbrs(p)) if (b[n] === -this.turn && this.group(n, b).libs.size === 0) { captured = true; break; }
+    return captured || this.group(p, b).libs.size > 0; }
+  play(p) { if (!this.legal(p)) return false; this.history.push({ board: this.board.slice(), ko: this.ko, caps: { ...this.caps }, passes: this.passes, p });
+    if (p === PASS) { this.passes++; this.ko = -1; this.turn = -this.turn; return true; }
+    this.board[p] = this.turn; let capturedStones = [];
+    for (const n of Go.nbrs(p)) if (this.board[n] === -this.turn) { const g = this.group(n); if (g.libs.size === 0) { for (const s of g.stones) { this.board[s] = 0; capturedStones.push(s); } } }
+    this.caps[this.turn] += capturedStones.length;
+    this.ko = capturedStones.length === 1 && this.group(p).stones.size === 1 && this.group(p).libs.size === 1 ? capturedStones[0] : -1;   // simple ko
+    this.passes = 0; this.turn = -this.turn; return true; }
+  undo() { const h = this.history.pop(); if (!h) return; this.board = h.board; this.ko = h.ko; this.caps = h.caps; this.passes = h.passes; this.turn = -this.turn; }
+  over() { return this.passes >= 2; }
+  legalMask() { const m = new Array(PTS + 1).fill(false); for (let p = 0; p < PTS; p++) m[p] = this.legal(p); m[PASS] = true; return m; }
+  score() {                                                     // area scoring (Tromp–Taylor), komi to White; returns black − white
+    const own = new Int8Array(PTS); const seen = new Uint8Array(PTS);
+    for (let p = 0; p < PTS; p++) { if (this.board[p]) { own[p] = this.board[p]; continue; } if (seen[p]) continue;
+      const reg = [], stack = [p], touch = new Set(); seen[p] = 1;
+      while (stack.length) { const q = stack.pop(); reg.push(q); for (const n of Go.nbrs(q)) { if (this.board[n]) touch.add(this.board[n]); else if (!seen[n]) { seen[n] = 1; stack.push(n); } } }
+      const o = touch.size === 1 ? [...touch][0] : 0; for (const q of reg) own[q] = o; }
+    let b = 0, w = 0; for (let p = 0; p < PTS; p++) { if (own[p] === 1) b++; else if (own[p] === -1) w++; }
+    return { black: b, white: w + KOMI, diff: b - w - KOMI, own }; }
+}
+const planes = (g) => { const x = new Float32Array(3 * PTS); for (let p = 0; p < PTS; p++) { if (g.board[p] === g.turn) x[p] = 1; else if (g.board[p] === -g.turn) x[PTS + p] = 1; } if (g.ko >= 0) x[2 * PTS + g.ko] = 1; return x; };
+const coord = p => p === PASS ? 'pass' : 'ABCDEFGHJ'[p % N] + (N - ((p / N) | 0));
+
+// ---------- fly ----------
+let brain, meta, bundle = null, game = new Go(), human = 1, busy = false, lastMove = -1, posXY = null, duel = false, lastOwn = null;
+const centers = () => Float32Array.from({ length: 64 }, (_, i) => (i + 0.5) / 64);
+const softmaxDot = (v, off, n, c) => { let mx = -Infinity; for (let i = 0; i < n; i++) mx = Math.max(mx, v[off + i]); let s = 0, acc = 0; for (let i = 0; i < n; i++) { const e = Math.exp(v[off + i] - mx); s += e; acc += e * c[i]; } return acc / s; };
+const sig = v => 1 / (1 + Math.exp(-v));
+async function think(g, wantRoot) {
+  const { logits, hroot } = await brain.forward([planes(g)], wantRoot);
+  const legal = g.legalMask(); const pol = new Float32Array(PTS + 1); let mx = -Infinity;
+  for (let i = 0; i <= PTS; i++) { pol[i] = legal[i] ? logits[i] : -Infinity; mx = Math.max(mx, pol[i]); }
+  let z = 0; for (let i = 0; i <= PTS; i++) { pol[i] = legal[i] ? Math.exp(pol[i] - mx) : 0; z += pol[i]; } for (let i = 0; i <= PTS; i++) pol[i] /= z;
+  const win = softmaxDot(logits, meta.n_moves, meta.n_bins, centers());
+  const own = new Float32Array(PTS); for (let p = 0; p < PTS; p++) own[p] = sig(logits[meta.n_moves + meta.n_bins + p]);   // P(point ends up the mover's)
+  return { pol, win, own, hroot };
+}
+async function verify() {
+  let ok = true, lines = [];
+  for (const t of meta.tests) {
+    const g = new Go(); g.board = Int8Array.from(t.stones); g.turn = 1; g.ko = t.ko.indexOf(1);
+    const { logits } = await brain.forward([planes(g)]);
+    const legal = [...Array(PTS)].map((_, i) => g.board[i] === 0 && i !== g.ko).concat([true]);   // the training mask (empty ∧ ¬ko); the game itself uses real rules
+    let best = -Infinity, bi = -1; for (let i = 0; i <= PTS; i++) if (legal[i] && logits[i] > best) { best = logits[i]; bi = i; }
+    const wp = softmaxDot(logits, meta.n_moves, meta.n_bins, centers());
+    const ownErr = Math.max(...t.own_sample.map(([j, v]) => Math.abs(sig(logits[meta.n_moves + meta.n_bins + j]) - v)));
+    const pass = bi === t.top5[0][0] && Math.abs(wp - t.win_prob) < 0.03 && ownErr < 0.03; ok = ok && pass;
+    lines.push(`${pass ? '✓' : '✗'} top1 ${coord(bi)} (torch ${coord(t.top5[0][0])}, KataGo ${coord(t.kata_top1)})  win ${(wp * 100).toFixed(1)}% (torch ${(t.win_prob * 100).toFixed(1)}%)  ownership err ${ownErr.toFixed(3)}`);
+  }
+  const alive = lines.length > 0; return { ok: ok && alive, lines };
+}
+async function flyMove() {
+  if (game.over() || busy) return; busy = true; render();
+  if (!brain) { say('The fly is still waking up — it will reply once its brain is loaded.'); await brainReady; }
+  if (brainError) { say(`<span class="err">The fly could not be loaded: ${brainError}</span>`); busy = false; render(); return; }
+  busy = true; render(); const t0 = performance.now();
+  const r = await think(game, true);
+  let best = 0; for (let i = 0; i <= PTS; i++) if (r.pol[i] > r.pol[best]) best = i;
+  const order = [...r.pol.keys()].sort((a, b) => r.pol[b] - r.pol[a]).slice(0, 5);
+  const mover = game.turn; game.play(best); lastMove = best; lastOwn = { own: r.own, mover };
+  $('timing').textContent = `1 position through the whole brain in ${(performance.now() - t0).toFixed(0)} ms · fly's win estimate ${(r.win * 100).toFixed(0)}% (its value sense is untrained — take it lightly)`;
+  $('cands').innerHTML = order.map((p, i) => `${i === 0 ? '<b>' : ''}${coord(p).padEnd(5)} prior ${(r.pol[p] * 100).toFixed(0).padStart(3)}%${i === 0 ? '</b>' : ''}`).join('<br>');
+  if (r.hroot) drawBrain(r.hroot);
+  busy = false; render();
+}
+async function runDuel() {
+  duel = true; $('duel').textContent = 'Stop'; game = new Go(); lastMove = -1; lastOwn = null; render();
+  while (duel && !game.over()) { await flyMove(); await new Promise(r => setTimeout(r, 250)); }
+  duel = false; $('duel').textContent = 'Watch the fly play itself'; render();
+}
+function drawBrain(h) {
+  const cv = $('brain'), ctx = cv.getContext('2d'); const Wc = cv.width, Hc = cv.height;
+  ctx.fillStyle = '#0b0d11'; ctx.fillRect(0, 0, Wc, Hc); if (!posXY) return;
+  const n = h.length; let mx = 0; for (let i = 0; i < n; i++) mx = Math.max(mx, h[i]);
+  const img = ctx.createImageData(Wc, Hc); const d = img.data;
+  for (let i = 0; i < n; i++) { const px = posXY.x[i], py = posXY.y[i]; if (px < 0 || py < 0 || px >= Wc || py >= Hc) continue;
+    const a = mx > 0 ? Math.min(1, Math.log1p(h[i]) / Math.log1p(mx)) : 0; const o = (py * Wc + px) * 4;
+    d[o] = Math.max(d[o], 40 + 202 * a); d[o + 1] = Math.max(d[o + 1], 40 + 153 * a); d[o + 2] = Math.max(d[o + 2], 40 + 30 * a); d[o + 3] = 255; }
+  ctx.putImageData(img, 0, 0);
+}
+
+// ---------- board rendering ----------
+function render() {
+  const svg = $('board'); const step = 100 / N, off = step / 2; let s = `<rect width="100" height="100" fill="#d9b06c" rx="2"/>`;
+  for (let i = 0; i < N; i++) { const c = off + i * step; s += `<line x1="${off}" y1="${c}" x2="${100 - off}" y2="${c}" stroke="#5a3d1a" stroke-width="0.5"/><line x1="${c}" y1="${off}" x2="${c}" y2="${100 - off}" stroke="#5a3d1a" stroke-width="0.5"/>`; }
+  for (const [x, y] of [[2, 2], [6, 2], [4, 4], [2, 6], [6, 6]]) s += `<circle cx="${off + x * step}" cy="${off + y * step}" r="1.1" fill="#5a3d1a"/>`;
+  if ($('ownov').checked && lastOwn) for (let p = 0; p < PTS; p++) { const v = lastOwn.own[p] * (lastOwn.mover === 1 ? 1 : -1) + (lastOwn.mover === 1 ? 0 : 1);   // → P(black owns)
+    const a = Math.abs(v - 0.5) * 2; if (a < 0.15) continue; const x = off + (p % N) * step, y = off + ((p / N) | 0) * step;
+    s += `<rect x="${x - step * 0.22}" y="${y - step * 0.22}" width="${step * 0.44}" height="${step * 0.44}" fill="${v > 0.5 ? '#111' : '#fff'}" opacity="${(0.15 + 0.5 * a).toFixed(2)}" rx="0.6"/>`; }
+  for (let p = 0; p < PTS; p++) { if (!game.board[p]) continue; const x = off + (p % N) * step, y = off + ((p / N) | 0) * step;
+    s += `<circle cx="${x}" cy="${y}" r="${step * 0.46}" fill="${game.board[p] === 1 ? '#111' : '#f4f4f4'}" stroke="#222" stroke-width="0.4"/>`;
+    if (p === lastMove) s += `<circle cx="${x}" cy="${y}" r="${step * 0.18}" fill="none" stroke="${game.board[p] === 1 ? '#f2c14e' : '#b8860b'}" stroke-width="0.7"/>`; }
+  for (let p = 0; p < PTS; p++) { const x = off + (p % N) * step, y = off + ((p / N) | 0) * step; s += `<rect x="${x - off}" y="${y - off}" width="${step}" height="${step}" fill="transparent" data-p="${p}"/>`; }
+  svg.innerHTML = s;
+  svg.onclick = e => { const p = e.target.dataset.p; if (p !== undefined) onPoint(+p); };
+  $('moves').textContent = game.history.map((h, i) => `${i % 2 ? 'W' : 'B'} ${coord(h.p)}`).join('  ') + (game.caps[1] || game.caps[-1] ? `   · captures B ${game.caps[1]} W ${game.caps[-1]}` : '');
+  if (game.over()) { const sc = game.score(); const who = sc.diff > 0 ? 'Black' : 'White'; const you = human === 1 ? 'Black' : 'White';
+    say(`Game over — ${who} wins by ${Math.abs(sc.diff)} (area scoring, komi ${KOMI}). ${duel ? '' : who === you ? 'You beat a fly.' : 'The fly wins.'}`, !duel && who === you ? 'ok' : ''); }
+  else if (duel) say(`Fly (${game.turn === 1 ? 'Black' : 'White'}) is thinking…`);
+  else if (busy) say('The fly is thinking…');
+  else say(game.turn === human ? `Your move (${human === 1 ? 'Black' : 'White'}).` : 'Fly to move.');
+  $('undo').disabled = busy || duel || game.history.length < 1; $('pass').disabled = busy || duel || game.over() || game.turn !== human;
+  $('side').textContent = human === 1 ? 'Play as White' : 'Play as Black';
+}
+function onPoint(p) { if (busy || duel || game.over() || game.turn !== human) return; if (!game.play(p)) return; lastMove = p; render(); setTimeout(flyMove, 30); }
+$('pass').onclick = () => { if (busy || duel || game.over() || game.turn !== human) return; game.play(PASS); lastMove = -1; render(); if (!game.over()) setTimeout(flyMove, 30); };
+$('new').onclick = () => { if (busy && !duel) return; duel = false; $('duel').textContent = 'Watch the fly play itself'; game = new Go(); lastMove = -1; lastOwn = null; $('cands').textContent = '—'; render(); if (human === -1) setTimeout(flyMove, 30); };
+$('side').onclick = () => { if (busy) return; human = -human; $('new').onclick(); };
+$('undo').onclick = () => { if (busy || duel) return; game.undo(); if (game.turn !== human) game.undo(); lastMove = -1; render(); };
+$('duel').onclick = () => { if (duel) { duel = false; return; } if (busy) return; runDuel(); };
+$('ownov').onchange = render;
+
+// ---------- boot ----------
+render();
+(async () => {
+  if (!navigator.gpu) fail('This browser has no WebGPU — the fly needs it. Use Chrome, Edge, or Safari 26+ on a machine with a GPU.');
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }); if (!adapter) fail('No WebGPU adapter found.');
+  const lim = adapter.limits; const device = await adapter.requestDevice({ requiredLimits: { maxStorageBufferBindingSize: Math.min(lim.maxStorageBufferBindingSize, 256 << 20), maxBufferSize: Math.min(lim.maxBufferSize, 256 << 20) } }).catch(e => fail('WebGPU device: ' + e.message));
+  let booting = true, losses = 0;
+  const onLost = async (i) => { losses++; say(`<span class="err">GPU reset (${i.reason || 'device lost'}) — re-wiring the brain…</span>`);
+    try { const ad = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }); const dv = await ad.requestDevice({ requiredLimits: { maxStorageBufferBindingSize: Math.min(ad.limits.maxStorageBufferBindingSize, 256 << 20), maxBufferSize: Math.min(ad.limits.maxBufferSize, 256 << 20) } }); dv.lost.then(onLost);
+      const old = brain; brain = new Brain(dv, bundle); brain.cost = old && old.cost; brain.targetMs = Math.max(40, ((old && old.targetMs) || 250) / 2); if (!booting) { busy = false; say('The brain is back. Your move.'); } }
+    catch (e) { say(`<span class="err">Could not recover the GPU: ${e.message}. Reload the page.</span>`); } };
+  device.lost.then(onLost);
+  ovmsg.textContent = 'Downloading the fly\'s brain (140 MB; 79 MB if you already played chess here; cached after the first visit) — you can start placing stones meanwhile.';
+  bundle = await loadBundle(); meta = bundle['meta.json'];
+  ovmsg.textContent = 'Wiring 15.1 million synapses into your GPU…'; ovdetail.textContent = ''; await new Promise(r => setTimeout(r, 20));
+  try { brain = new Brain(device, bundle); } catch (e) { fail('Brain setup: ' + e.message); }
+  { const u16 = new Uint16Array(bundle['pos.bin']); const f16 = h => { const s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, f = h & 0x3ff; return e === 0 ? s * f * 2 ** -24 : e === 31 ? NaN : s * (1 + f / 1024) * 2 ** (e - 15); };
+    const n = u16.length / 2; const xy = new Float32Array(u16.length); for (let i = 0; i < u16.length; i++) xy[i] = f16(u16[i]);
+    let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity; for (let i = 0; i < n; i++) { minx = Math.min(minx, xy[2 * i]); maxx = Math.max(maxx, xy[2 * i]); miny = Math.min(miny, xy[2 * i + 1]); maxy = Math.max(maxy, xy[2 * i + 1]); }
+    const cv = $('brain'); const sc = Math.min((cv.width - 8) / (maxx - minx), (cv.height - 8) / (maxy - miny)); posXY = { x: new Int16Array(n), y: new Int16Array(n) };
+    for (let i = 0; i < n; i++) { posXY.x[i] = 4 + (xy[2 * i] - minx) * sc; posXY.y[i] = 4 + (xy[2 * i + 1] - miny) * sc; } }
+  let cal, v, dt, attempt = 0;
+  for (;;) { attempt++; const lossesBefore = losses;
+    try { ovmsg.textContent = 'Measuring your GPU…'; cal = await brain.calibrate(planes(new Go()));
+      ovmsg.textContent = 'Checking the fly against the reference implementation…'; const t0 = performance.now(); v = await verify(); dt = (performance.now() - t0) / meta.tests.length;
+      if (v.ok || losses === lossesBefore) break; }
+    catch (e) { if (attempt >= 3) fail('GPU setup failed: ' + e.message); await new Promise(r => setTimeout(r, 500)); continue; }
+    if (attempt >= 3) break; await new Promise(r => setTimeout(r, 500)); }
+  booting = false;
+  $('meta').innerHTML = `${meta.N.toLocaleString()} neurons · ${meta.E.toLocaleString()} synapses · ${meta.T} settle steps · leak ${meta.leak}<br>retinotopic encoder: 3 planes × 81 points → ${meta.n_in} photoreceptors · readout ${meta.n_ro.toLocaleString()} neurons → ${meta.n_moves} moves + ${meta.n_bins} value bins + ${meta.n_own} ownership<br>checkpoint: ${meta.checkpoint}<br>` +
+    `<span class="${v.ok ? 'ok' : 'err'}">${v.ok ? 'verified' : 'MISMATCH'} against torch on ${meta.tests.length} positions</span> · ${dt.toFixed(0)} ms per forward pass · settle ≈ ${cal.a.toFixed(0)} + ${cal.b.toFixed(1)}·B ms per step<br>` + v.lines.join('<br>');
+  if (!v.ok) { brain = null; fail('The GPU brain does not match the reference implementation. ' + v.lines.join(' | ')); }
+  $('loader').style.display = 'none'; render();
+  window.flymate = { brain: () => brain, game: () => game, Go, planes };
+})().catch(e => { console.error(e); if (!brainError) { brainError = e.message; ovmsg.innerHTML = `<span class="err">${e.message}</span>`; } }).finally(() => brainReadyResolve());
+</script>
+</body>
+</html>

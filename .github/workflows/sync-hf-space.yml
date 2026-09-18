@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - index.html
+      - go.html
       - .github/workflows/sync-hf-space.yml
   workflow_dispatch:
 
@@ -22,11 +23,11 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           git clone https://NakliTechie:$HF_TOKEN@huggingface.co/spaces/naklitechie/flymate /tmp/hf-space
-          cp index.html /tmp/hf-space/
+          cp index.html go.html /tmp/hf-space/
           cd /tmp/hf-space
           git config user.email "chirag@naklitechie.com"
           git config user.name "NakliTechie"
-          git add index.html
+          git add index.html go.html
           git diff --cached --quiet && echo "No changes" && exit 0
           git commit -m "Sync from GitHub $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           git push
