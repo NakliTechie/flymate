@@ -1,15 +1,17 @@
 // Play-strength check: fly (White) vs Stockfish skill 1, N games per weight set. node shots/duel-bench.mjs <weightsQuery> <games>
 import puppeteer from '/Users/chiragpatnaik/.npm/_npx/8003d8991b0d346b/node_modules/puppeteer-core/lib/esm/puppeteer/puppeteer-core.js';
 const [wq, games, think] = [process.argv[2], +process.argv[3] || 4, process.argv[4] || '3000'];
+const base = wq === 'live' ? 'https://flymate.naklitechie.com/' : 'http://localhost:8791/?weights=' + wq;
 const browser = await puppeteer.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: false,
-  userDataDir: '/private/tmp/claude-501/flymate-bench-' + wq.replace(/\W/g, ''), args: ['--enable-unsafe-webgpu', '--window-size=900,700'] });
+  userDataDir: '/private/tmp/claude-501/flymate-bench-' + wq.replace(/\W/g, ''), args: ['--enable-unsafe-webgpu', '--window-size=900,700'], protocolTimeout: 30000 });
 const page = await browser.newPage();
-await page.goto('http://localhost:8791/?weights=' + wq, { waitUntil: 'load' });
-await page.waitForFunction(() => window.flymate && window.flymate.brain(), { timeout: 180000 });
+await page.goto(base, { waitUntil: 'load' });
+await page.waitForFunction(() => window.flymate && window.flymate.brain(), { timeout: 900000, polling: 2000 });
+console.log('brain ready:', await page.evaluate(() => document.getElementById('meta').innerText.split('\n').slice(2, 4).join(' | ').slice(0, 160)));
 const results = [];
 for (let g = 0; g < games; g++) {
   await page.select('#opp', 'sf-1'); await page.select('#think', think); await page.evaluate(() => document.getElementById('duel').click());
-  await page.waitForFunction(() => /mate|Draw|Stalemate/.test(document.getElementById('status').innerText) && document.getElementById('duel').innerText.startsWith('Watch'), { timeout: 900000 });
+  for (;;) { await new Promise(r => setTimeout(r, 5000)); try { if (await page.evaluate(() => /mate|Draw|Stalemate/.test(document.getElementById('status').innerText) && document.getElementById('duel').innerText.startsWith('Watch'))) break; } catch (e) { console.log('poll:', e.message.slice(0, 60)); } }
   const r = await page.evaluate(() => ({ status: document.getElementById('status').innerText, plies: window.flymate.game().history().length, last: document.getElementById('timing').innerText.split('·').slice(0, 3).join('·') }));
   results.push(r); console.log(wq, 'think', think, 'game', g + 1, r.status, r.plies, 'plies |', r.last);
 }

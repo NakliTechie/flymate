@@ -68,10 +68,10 @@ select{background:#1f2530;color:var(--fg);border:1px solid var(--line);border-ra
         </select>
       </label>
       <label class="tog">think
-        <select id="think">
-          <option value="3000" selected>~3 s</option>
-          <option value="10000">~10 s</option>
-          <option value="30000">~30 s</option>
+        <select id="think" title="How much of the game tree the fly searches; the seconds it took are shown after each move">
+          <option value="3000" selected>quick</option>
+          <option value="10000">deep</option>
+          <option value="30000">deepest</option>
         </select>
       </label>
       <button id="duel">Watch Fly vs Stockfish</button>
