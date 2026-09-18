@@ -38,9 +38,7 @@ button.primary{background:var(--acc);color:#111;border-color:var(--acc);font-wei
 canvas#brain{width:100%;height:auto;display:block;background:#0b0d11;border-radius:6px}
 .err{color:var(--bad)}.ok{color:var(--ok)}
 footer{max-width:1080px;margin:0 auto;padding:0 20px 40px;color:var(--dim);font-size:12.5px;line-height:1.6}
-#overlay{position:fixed;inset:0;background:rgba(15,17,21,.92);display:flex;align-items:center;justify-content:center;z-index:9}
-#overlay .box{width:min(520px,92vw);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px}
-#overlay h2{margin:0 0 6px;font-size:20px}
+#loader{margin-top:8px}#loader .bar{margin:4px 0}
 label.tog{display:inline-flex;align-items:center;gap:6px;color:var(--dim);font-size:13px;cursor:pointer}
 select{background:#1f2530;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit}
 </style>
@@ -73,7 +71,8 @@ select{background:#1f2530;color:var(--fg);border:1px solid var(--line);border-ra
     <div class="moves" id="moves"></div>
   </div>
   <div>
-    <div class="panel"><h2>Status</h2><div class="status" id="status">Loading…</div><div class="mono" id="timing"></div></div>
+    <div class="panel"><h2>Status</h2><div class="status" id="status">Your move.</div><div class="mono" id="timing"></div>
+      <div id="loader"><div class="mono" id="ovmsg">Waking the fly…</div><div class="bar"><i id="ovbar"></i></div><div class="mono" id="ovdetail"></div></div></div>
     <div class="panel"><h2>What the fly considered</h2><div class="cands" id="cands">—</div></div>
     <div class="panel"><h2>Brain activity (last move)</h2><canvas id="brain" width="560" height="420"></canvas><div class="mono" id="brainnote">Each dot is one neuron at its real position in the fly's brain; brightness is its activity after the board settled for 5 steps.</div></div>
     <div class="panel"><h2>The brain</h2><div class="mono" id="meta"></div></div>
@@ -82,21 +81,17 @@ select{background:#1f2530;color:var(--fg);border:1px solid var(--line);border-ra
 <footer>
   Recipe and idea: <a href="https://huggingface.co/mlabonne/chessfly">ChessFly</a> by Maxime Labonne. Connectome: FlyWire FAFB v783 (Dorkenwald et al. 2024; Schlegel et al. 2024; signs from Shiu et al. 2024) — FlyWire's non-commercial terms apply to anything derived from the graph. Labels: Lichess evaluations (CC0). Only an encoder, one positive gain per synapse, per-neuron homeostasis and a decoder were trained; the wiring and its excitatory/inhibitory signs are the fly's. This network recovers Stockfish's top move 28% of the time on held-out positions (ChessFly: 30%). Source: <a href="https://github.com/NakliTechie/flymate">NakliTechie/flymate</a>. A <a href="https://naklitechie.github.io/">NakliTechie</a> single-file app.
 </footer>
-<div id="overlay"><div class="box">
-  <h2>Waking the fly</h2>
-  <div id="ovmsg" class="mono">Checking for WebGPU…</div>
-  <div class="bar"><i id="ovbar"></i></div>
-  <div id="ovdetail" class="mono"></div>
-</div></div>
 
 <script type="module">
 import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1/+esm';
 
 // ---------- UI handles ----------
 const $ = id => document.getElementById(id);
-const ov = $('overlay'), ovmsg = $('ovmsg'), ovbar = $('ovbar'), ovdetail = $('ovdetail');
+const ovmsg = $('ovmsg'), ovbar = $('ovbar'), ovdetail = $('ovdetail');
 const say = (t, cls) => { $('status').innerHTML = t; $('status').className = 'status ' + (cls || ''); };
-const fail = (t) => { ovmsg.innerHTML = `<span class="err">${t}</span>`; ov.style.display = 'flex'; throw new Error(t); };
+let brainError = null;                                   // set when the fly cannot be loaded; Stockfish still works
+const fail = (t) => { brainError = t; ovmsg.innerHTML = `<span class="err">${t}</span>`; ovbar.style.width = '0'; throw new Error(t); };
+let brainReadyResolve; const brainReady = new Promise(r => brainReadyResolve = r);
 
 // ---------- bundle ----------
 // Weights live on Hugging Face (naklitechie/flymate-chess). `?weights=local` uses ./weights/chess/ for development.
@@ -391,6 +386,9 @@ function uciOf(m) { return m.from + m.to + (m.promotion || ''); }
 
 async function flyMove() {
   if (game.isGameOver() || busy) return; busy = true; render();
+  if (!brain) { say('The fly is still waking up — it will reply once its brain is loaded.'); await brainReady; }
+  if (brainError) { say(`<span class="err">The fly could not be loaded: ${brainError}</span> Switch the opponent to Stockfish.`); busy = false; render(); return; }
+  busy = true; render();
   const t0 = performance.now();
   const legal = game.moves({ verbose: true });
   const root = canonical(game); const xs = [features(root.fen)]; const meta_ = [];
@@ -488,7 +486,7 @@ function render() {
       : game.isStalemate() ? 'Stalemate.' : game.isThreefoldRepetition() ? 'Draw by repetition.' : game.isInsufficientMaterial() ? 'Draw — insufficient material.' : 'Draw.';
     say(res, game.isCheckmate() && ((!inDuel && game.turn() !== human) || (inDuel && !loserIsWhite)) ? 'ok' : '');
   } else if (duel) say(game.turn() === 'w' ? 'Fly (White) is thinking…' : 'Stockfish (Black) is thinking…');
-  else if (busy) say(oppName === 'the fly' ? 'The fly is thinking…' : 'Stockfish is thinking…');
+  else if (busy) say(oppName === 'the fly' ? (brain ? 'The fly is thinking…' : 'The fly is still waking up — it will reply once its brain is loaded.') : 'Stockfish is thinking…');
   else say(game.turn() === human ? (game.inCheck() ? 'Your move — you are in check.' : 'Your move.') : `${oppName === 'the fly' ? 'Fly' : 'Stockfish'} to move.`);
   $('undo').disabled = busy || duel || game.history().length < 1; $('side').textContent = human === 'w' ? 'Play as Black' : 'Play as White';
   $('new').disabled = busy && !duel; $('side').disabled = busy;
@@ -509,8 +507,9 @@ $('opp').onchange = () => { if (opp().startsWith('sf-')) stockfish().catch(e => 
 $('undo').onclick = () => { if (busy) return; game.undo(); if (game.turn() !== human) game.undo(); lastMove = null; sel = null; render(); };
 
 // ---------- boot ----------
+render();
 (async () => {
-  if (!navigator.gpu) fail('This browser has no WebGPU. Use Chrome, Edge, or Safari 26+ on a machine with a GPU.');
+  if (!navigator.gpu) fail('This browser has no WebGPU — the fly needs it. Use Chrome, Edge, or Safari 26+ on a machine with a GPU. Stockfish still works.');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }); if (!adapter) fail('No WebGPU adapter found.');
   const lim = adapter.limits; const device = await adapter.requestDevice({ requiredLimits: {
     maxStorageBufferBindingSize: Math.min(lim.maxStorageBufferBindingSize, 256 << 20), maxBufferSize: Math.min(lim.maxBufferSize, 256 << 20),
@@ -526,7 +525,7 @@ $('undo').onclick = () => { if (busy) return; game.undo(); if (game.turn() !== h
     } catch (e) { say(`<span class="err">Could not recover the GPU: ${e.message}. Reload the page.</span>`); }
   };
   device.lost.then(onLost);
-  ovmsg.textContent = 'Downloading the brain (159 MB, cached after the first visit)…';
+  ovmsg.textContent = 'Downloading the fly\'s brain (159 MB, cached after the first visit) — you can start playing meanwhile.';
   bundle = await loadBundle();
   meta = bundle['meta.json']; moveIndex = new Map(meta.moves.map((m, i) => [m, i]));
   ovmsg.textContent = 'Wiring 15.1 million synapses into your GPU…'; ovdetail.textContent = '';
@@ -551,10 +550,10 @@ $('undo').onclick = () => { if (busy) return; game.undo(); if (game.turn() !== h
   const dt = (performance.now() - t0) / meta.tests.length;
   $('meta').innerHTML = `${meta.N.toLocaleString()} neurons · ${meta.E.toLocaleString()} synapses · ${meta.T} settle steps · leak ${meta.leak}<br>encoder 780→${meta.n_in} photoreceptors · readout ${meta.n_ro.toLocaleString()} central + descending neurons → ${meta.n_moves} moves + ${meta.n_bins} value bins<br>checkpoint: ${meta.checkpoint}<br>` +
     `<span class="${v.ok ? 'ok' : 'err'}">${v.ok ? 'verified' : 'MISMATCH'} against torch on ${meta.tests.length} positions — max logit error ${v.maxErr.toFixed(3)}</span> · ${dt.toFixed(0)} ms per forward pass · settle ≈ ${cal.a.toFixed(0)} + ${cal.b.toFixed(1)}·B ms per step → ${Math.ceil(brain.N / brain.chunkRows(32))} submission(s) per step at B=32, batch cap ${brain.batchCap}<br>` + v.lines.map(l => l.replace(/</g, '&lt;')).join('<br>');
-  if (!v.ok) fail('The GPU brain does not match the reference implementation. Details in "The brain" panel. ' + v.lines.join(' | '));
-  ov.style.display = 'none'; render();
+  if (!v.ok) { brain = null; fail('The GPU brain does not match the reference implementation. Details in "The brain" panel. ' + v.lines.join(' | ')); }
+  $('loader').style.display = 'none'; render();
   window.flymate = { brain: () => brain, game: () => game, features, canonical, Chess };   // debug hook
-})().catch(e => { console.error(e); if (ov.style.display !== 'none') ovmsg.innerHTML = `<span class="err">${e.message}</span>`; });
+})().catch(e => { console.error(e); if (!brainError) { brainError = e.message; ovmsg.innerHTML = `<span class="err">${e.message}</span>`; } }).finally(() => brainReadyResolve());
 </script>
 </body>
 </html>
