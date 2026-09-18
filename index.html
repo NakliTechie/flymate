@@ -287,18 +287,21 @@ class Brain {
   }
   /** Rows per settle dispatch so that one GPU submission stays under targetMs (mobile GPUs kill long ones). */
   chunkRows(B) {
-    if (!this.cost) return this.N;
+    if (!this.cost) return Math.ceil(this.N / 8 / 64) * 64;      // nothing measured yet: 8 submissions per step, safe on slow GPUs
     const stepMs = this.cost.a + this.cost.b * B;                 // predicted ms for one full-N settle step at batch B
     const chunks = Math.max(1, Math.ceil(stepMs / this.targetMs));
     return Math.max(1024, Math.ceil(this.N / chunks / 64) * 64);
   }
   /** Time two forwards to fit settle cost ≈ a + b·B (ms per step). */
   async calibrate(x) {
-    const t = async (B) => { const t0 = performance.now(); await this.forward(Array.from({ length: B }, () => x)); return performance.now() - t0; };
-    await t(1);                                                 // warm shaders
-    const t1 = await t(1), t8 = await t(8);
-    const b = Math.max(0, (t8 - t1) / 7 / this.T), a = Math.max(0.1, t1 / this.T - b);
-    this.cost = { a, b }; this.targetMs = 250;
+    const t = async (B) => { const t0 = performance.now(); const r = await this.forward(Array.from({ length: B }, () => x)); if (!r.logits.some(v => v !== 0)) throw new Error('GPU returned zeros (device lost?)'); return performance.now() - t0; };
+    this.targetMs = this.targetMs || 250;
+    await t(1);                                                 // warm shaders (chunked 8× until we know the cost)
+    const t1 = await t(1);
+    this.cost = { a: 0.3 * t1 / this.T, b: 0.7 * t1 / this.T };  // provisional: assume most of the B=1 time scales per column, so B=8 is chunked safely
+    const t8 = await t(8);
+    const b = Math.max(0.05, (t8 - t1) / 7 / this.T), a = Math.max(0.1, t1 / this.T - b);
+    this.cost = { a, b };
     return { t1, t8, a, b };
   }
   /** xs: array of Float32Array(780) → { logits: Float32Array[B][nout], hroot?: Float32Array(N) } */
@@ -375,9 +378,10 @@ async function verify() {
   // batch consistency: a full-width batch of alternating positions must equal the B=1 results (caught a dispatch-limit bug at B ≥ 31)
   { const fens = meta.tests.map(t => canonical(new Chess(t.fen + ' 0 1')).fen); const xs = fens.map(features);
     const singles = []; for (const x of xs) singles.push((await brain.forward([x])).logits);
-    const B = brain.BMAX; const big = (await brain.forward(Array.from({ length: B }, (_, i) => xs[i % xs.length]))).logits;
+    const B = Math.max(2, Math.min(brain.BMAX, brain.batchCap || brain.BMAX)); const big = (await brain.forward(Array.from({ length: B }, (_, i) => xs[i % xs.length]))).logits;
     let worst = 0; for (let k = 0; k < B; k++) { const ref = singles[k % xs.length]; for (let i = 0; i < brain.nout; i++) worst = Math.max(worst, Math.abs(big[k * brain.nout + i] - ref[i])); }
-    const pass = worst < 1e-3; ok = ok && pass; lines.push(`${pass ? '✓' : '✗'} batch of ${B} matches single positions (max diff ${worst.toExponential(1)})`); }
+    const alive = singles.some(l => l.some(v => v !== 0)) && !singles.every(l => l.every((v, i) => v === l[0]));
+    const pass = worst < 1e-3 && alive; ok = ok && pass; lines.push(`${pass ? '✓' : '✗'} batch of ${B} matches single positions (max diff ${worst.toExponential(1)})${alive ? '' : ' — outputs are constant: the GPU context was probably lost'}`); }
   for (const t of meta.tests) {
     const g = new Chess(t.fen + ' 0 1'); const { fen } = canonical(g);
     const { logits } = await brain.forward([features(fen)]);
@@ -413,7 +417,8 @@ async function evalNodes(nodes, wantRoot = false) {
   return hroot;
 }
 const nodeOf = (g) => { const c = canonical(g); const term = g.isCheckmate() ? 0 : g.isDraw() ? 0.5 : null;   // terminal value for the mover
-  return { x: features(c.fen), mirrored: c.mirrored, term, legal: term === null ? g.moves({ verbose: true }).map(uciOf) : [] }; };
+  const mvs = term === null ? g.moves({ verbose: true }) : [];
+  return { x: features(c.fen), mirrored: c.mirrored, term, legal: mvs.map(uciOf), tactical: new Set(mvs.filter(m => m.captured || /[+#]/.test(m.san)).map(uciOf)) }; };
 const topK = (node, k) => [...node.prior.entries()].sort((a, b) => b[1] - a[1]).slice(0, k).map(([u]) => u);
 const mv = u => ({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] || undefined });
 
@@ -421,18 +426,18 @@ const TACTICAL_EXTRA = 2;                                       // captures/chec
 function planSearch(nLegal) {
   // positions the GPU can do in the chosen thinking time, then the deepest depth (≤5) that still keeps width ≥ 3, else ≥ 2
   const perPos = brain.cost ? brain.cost.b * brain.T + brain.cost.a * brain.T / 24 : 10;
-  const budget = Math.max(12, Math.min(6000, Math.round((+$('think').value * 0.8) / perPos)));
-  const L1 = Math.min(nLegal, budget >= 60 ? 40 : Math.max(4, Math.floor(budget / 2)));
+  const budget = Math.max(6, Math.min(6000, Math.round((+$('think').value * 0.8) / perPos)));
+  const L1 = Math.min(nLegal, budget >= 60 ? 40 : Math.max(3, Math.floor(budget / 2)));
   const rem = budget - L1;
   const cost = (D, k) => { let n = 0, w = L1; for (let d = 2; d <= D; d++) { w *= k + 0.5; n += w; } return n; };   // +0.5 ≈ tactical extras
   for (let D = 5; D >= 3; D--) { let k = 6; while (k >= 2 && cost(D, k) > rem) k--; if (k >= 2) return { depth: D, k, L1, budget }; }   // deepest depth with width ≥ 2 (+ tactical extras)
   if (rem >= L1) return { depth: 2, k: Math.min(8, Math.floor(rem / L1)), L1, budget };
   return { depth: 1, k: 0, L1, budget };
 }
-const tactical = (g, uci) => { const m = g.moves({ verbose: true }).find(x => uciOf(x) === uci); return m && (m.captured || /[+#]/.test(m.san)); };
-function replies(g, node, k) {                                   // top-k by the node's own policy + up to TACTICAL_EXTRA captures/checks
-  const top = topK(node, k); const set = new Set(top); let extra = 0;
-  for (const [u] of [...node.prior.entries()].sort((a, b) => b[1] - a[1])) { if (extra >= TACTICAL_EXTRA) break; if (!set.has(u) && tactical(g, u)) { set.add(u); extra++; } }
+function replies(g, node, k) {                                   // top-k by the node's own policy + up to TACTICAL_EXTRA captures/checks (by policy order)
+  const sorted = [...node.prior.entries()].sort((a, b) => b[1] - a[1]).map(([u]) => u);
+  const set = new Set(sorted.slice(0, k)); let extra = 0;
+  for (const u of sorted) { if (extra >= TACTICAL_EXTRA) break; if (!set.has(u) && node.tactical.has(u)) { set.add(u); extra++; } }
   return [...set];
 }
 
@@ -573,14 +578,15 @@ render();
   const lim = adapter.limits; const device = await adapter.requestDevice({ requiredLimits: {
     maxStorageBufferBindingSize: Math.min(lim.maxStorageBufferBindingSize, 256 << 20), maxBufferSize: Math.min(lim.maxBufferSize, 256 << 20),
     maxStorageBuffersPerShaderStage: Math.max(lim.maxStorageBuffersPerShaderStage >= 13 ? 13 : 8, 8) } }).catch(e => fail('WebGPU device: ' + e.message));
+  let booting = true, losses = 0;
   const onLost = async (i) => {                             // rebuild the brain on a fresh device, with shorter submissions
-    say(`<span class="err">GPU reset (${i.reason || 'device lost'}) — re-wiring the brain…</span>`);
+    losses++; say(`<span class="err">GPU reset (${i.reason || 'device lost'}) — re-wiring the brain…</span>`);
     try {
       const ad = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
       const dv = await ad.requestDevice({ requiredLimits: { maxStorageBufferBindingSize: Math.min(ad.limits.maxStorageBufferBindingSize, 256 << 20), maxBufferSize: Math.min(ad.limits.maxBufferSize, 256 << 20) } });
       dv.lost.then(onLost);
-      const old = brain; brain = new Brain(dv, bundle); brain.cost = old.cost; brain.targetMs = Math.max(60, (old.targetMs || 250) / 2); brain.batchCap = Math.max(4, Math.floor((old.batchCap || 72) / 2));
-      busy = false; say('The brain is back. Your move.');
+      const old = brain; brain = new Brain(dv, bundle); brain.cost = old && old.cost; brain.targetMs = Math.max(40, ((old && old.targetMs) || 250) / 2); brain.batchCap = Math.max(2, Math.floor(((old && old.batchCap) || 72) / 2));
+      if (!booting) { busy = false; say('The brain is back. Your move.'); }
     } catch (e) { say(`<span class="err">Could not recover the GPU: ${e.message}. Reload the page.</span>`); }
   };
   device.lost.then(onLost);
@@ -599,14 +605,22 @@ render();
     const sc = Math.min((cv.width - 8) / (maxx - minx), (cv.height - 8) / (maxy - miny));
     posXY = { x: new Int16Array(n), y: new Int16Array(n) };
     for (let i = 0; i < n; i++) { posXY.x[i] = 4 + (pxy[2 * i] - minx) * sc; posXY.y[i] = 4 + (pxy[2 * i + 1] - miny) * sc; } }
-  ovmsg.textContent = 'Measuring your GPU…';
-  let cal; try { cal = await brain.calibrate(features(canonical(new Chess()).fen)); } catch (e) { fail('GPU calibration: ' + e.message); }
-  // batch cap so a whole lookahead stays responsive: aim for ≤ ~6 s per fly move
-  const perPosMs = cal.b * brain.T + cal.a * brain.T / 8;
-  brain.batchCap = Math.max(4, Math.min(72, Math.floor(6000 / Math.max(perPosMs, 1))));
-  ovmsg.textContent = 'Checking the fly against the reference implementation…';
-  const t0 = performance.now(); let v; try { v = await verify(); } catch (e) { fail('Verification crashed: ' + e.message); }
-  const dt = (performance.now() - t0) / meta.tests.length;
+  let cal, v, dt, attempt = 0;
+  for (;;) {                                                // calibrate + verify; if the GPU context is lost meanwhile, retry on the rebuilt brain with smaller budgets
+    attempt++; const lossesBefore = losses;
+    try {
+      ovmsg.textContent = 'Measuring your GPU…';
+      cal = await brain.calibrate(features(canonical(new Chess()).fen));
+      const perPosMs = cal.b * brain.T + cal.a * brain.T / 8;           // batch cap so a lookahead stays responsive
+      brain.batchCap = Math.max(2, Math.min(brain.batchCap || 72, Math.floor(6000 / Math.max(perPosMs, 1))));
+      ovmsg.textContent = 'Checking the fly against the reference implementation…';
+      const t0 = performance.now(); v = await verify(); dt = (performance.now() - t0) / meta.tests.length;
+      if (v.ok || losses === lossesBefore) break;
+    } catch (e) { if (attempt >= 3) fail('GPU setup failed: ' + e.message); await new Promise(r => setTimeout(r, 500)); continue; }
+    if (attempt >= 3) break;
+    await new Promise(r => setTimeout(r, 500));                      // a loss happened during this attempt: brain was rebuilt by onLost — go again
+  }
+  booting = false;
   $('meta').innerHTML = `${meta.N.toLocaleString()} neurons · ${meta.E.toLocaleString()} synapses · ${meta.T} settle steps · leak ${meta.leak}<br>encoder 780→${meta.n_in} photoreceptors · readout ${meta.n_ro.toLocaleString()} central + descending neurons → ${meta.n_moves} moves + ${meta.n_bins} value bins<br>checkpoint: ${meta.checkpoint}<br>` +
     `<span class="${v.ok ? 'ok' : 'err'}">${v.ok ? 'verified' : 'MISMATCH'} against torch on ${meta.tests.length} positions — max logit error ${v.maxErr.toFixed(3)}</span> · ${dt.toFixed(0)} ms per forward pass · settle ≈ ${cal.a.toFixed(0)} + ${cal.b.toFixed(1)}·B ms per step → ${Math.ceil(brain.N / brain.chunkRows(32))} submission(s) per step at B=32, batch cap ${brain.batchCap}<br>` + v.lines.map(l => l.replace(/</g, '&lt;')).join('<br>');
   if (!v.ok) { brain = null; fail('The GPU brain does not match the reference implementation. Details in "The brain" panel. ' + v.lines.join(' | ')); }
