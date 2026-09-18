@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlyMate — are you smarter than a fly?</title>
+<meta name="description" content="Play chess against the complete fruit-fly connectome — 138,639 neurons, 15.1 million synapses, wired exactly as FlyWire reconstructed them — running on your own GPU in this tab.">
+<style>
+:root{--bg:#0f1115;--panel:#161a21;--line:#262c36;--fg:#e6e8ec;--dim:#8b93a1;--acc:#f2c14e;--light:#e9dcc4;--dark:#a67c52;--sel:rgba(242,193,78,.55);--dot:rgba(242,193,78,.35);--bad:#ff6b6b;--ok:#7bd88f}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+header{padding:22px 20px 8px;max-width:1080px;margin:0 auto}
+h1{margin:0;font-size:26px;letter-spacing:-.01em}h1 span{color:var(--acc)}
+.sub{color:var(--dim);margin:4px 0 0;font-size:14px}
+main{max-width:1080px;margin:0 auto;padding:12px 20px 40px;display:grid;grid-template-columns:minmax(280px,520px) minmax(280px,1fr);gap:22px;align-items:start}
+@media(max-width:760px){main{grid-template-columns:1fr}}
+.board{display:grid;grid-template-columns:repeat(8,1fr);aspect-ratio:1;border:2px solid var(--line);border-radius:6px;overflow:hidden;user-select:none;touch-action:manipulation}
+.sq{display:flex;align-items:center;justify-content:center;font-size:min(7vw,44px);line-height:1;position:relative;cursor:pointer}
+.sq.l{background:var(--light)}.sq.d{background:var(--dark)}
+.sq.sel{box-shadow:inset 0 0 0 4px var(--sel)}.sq.last{box-shadow:inset 0 0 0 3px rgba(242,193,78,.7)}
+.sq.dot::after{content:"";position:absolute;width:26%;height:26%;border-radius:50%;background:var(--dot)}
+.sq.cap::after{content:"";position:absolute;inset:6%;border-radius:50%;border:4px solid var(--dot)}
+.sq .w{color:#fff;text-shadow:0 0 2px #000,0 0 3px #000}.sq .b{color:#111}
+.sq .coord{position:absolute;font-size:10px;color:rgba(0,0,0,.45);left:3px;top:2px}
+.sq .coordf{position:absolute;font-size:10px;color:rgba(0,0,0,.45);right:3px;bottom:1px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:14px}
+.panel h2{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+.status{font-size:17px;min-height:26px}
+.row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+button{background:#1f2530;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:7px 12px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--acc)}button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--acc);color:#111;border-color:var(--acc);font-weight:600}
+.cands{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.7}
+.cands b{color:var(--acc)}
+.bar{height:6px;background:#0b0d11;border-radius:3px;overflow:hidden;margin:6px 0}.bar i{display:block;height:100%;background:var(--acc);width:0}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:var(--dim)}
+.moves{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:var(--dim);max-height:110px;overflow:auto;line-height:1.6}
+canvas#brain{width:100%;height:auto;display:block;background:#0b0d11;border-radius:6px}
+.err{color:var(--bad)}.ok{color:var(--ok)}
+footer{max-width:1080px;margin:0 auto;padding:0 20px 40px;color:var(--dim);font-size:12.5px;line-height:1.6}
+#overlay{position:fixed;inset:0;background:rgba(15,17,21,.92);display:flex;align-items:center;justify-content:center;z-index:9}
+#overlay .box{width:min(520px,92vw);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px}
+#overlay h2{margin:0 0 6px;font-size:20px}
+label.tog{display:inline-flex;align-items:center;gap:6px;color:var(--dim);font-size:13px;cursor:pointer}
+</style>
+</head>
+<body>
+<header>
+  <h1>FlyMate <span>·</span> are you smarter than a fly?</h1>
+  <p class="sub">The complete FlyWire fruit-fly connectome — 138,639 neurons, 15,091,983 synapses, wired exactly as reconstructed — trained to play chess. It runs on your GPU, in this tab. Nothing leaves your device.</p>
+</header>
+<main>
+  <div>
+    <div class="board" id="board"></div>
+    <div class="row">
+      <button id="new" class="primary">New game</button>
+      <button id="side">Play as Black</button>
+      <button id="undo">Undo</button>
+      <label class="tog"><input type="checkbox" id="look" checked> fly looks one move ahead</label>
+    </div>
+    <div class="moves" id="moves"></div>
+  </div>
+  <div>
+    <div class="panel"><h2>Status</h2><div class="status" id="status">Loading…</div><div class="mono" id="timing"></div></div>
+    <div class="panel"><h2>What the fly considered</h2><div class="cands" id="cands">—</div></div>
+    <div class="panel"><h2>Brain activity (last move)</h2><canvas id="brain" width="560" height="420"></canvas><div class="mono" id="brainnote">Each dot is one neuron at its real position in the fly's brain; brightness is its activity after the board settled for 5 steps.</div></div>
+    <div class="panel"><h2>The brain</h2><div class="mono" id="meta"></div></div>
+  </div>
+</main>
+<footer>
+  Recipe and idea: <a href="https://huggingface.co/mlabonne/chessfly">ChessFly</a> by Maxime Labonne. Connectome: FlyWire FAFB v783 (Dorkenwald et al. 2024; Schlegel et al. 2024; signs from Shiu et al. 2024) — FlyWire's non-commercial terms apply to anything derived from the graph. Labels: Lichess evaluations (CC0). Only an encoder, one positive gain per synapse, per-neuron homeostasis and a decoder were trained; the wiring and its excitatory/inhibitory signs are the fly's. This network recovers Stockfish's top move 28% of the time on held-out positions (ChessFly: 30%). Source: <a href="https://github.com/NakliTechie/flymate">NakliTechie/flymate</a>. A <a href="https://naklitechie.github.io/">NakliTechie</a> single-file app.
+</footer>
+<div id="overlay"><div class="box">
+  <h2>Waking the fly</h2>
+  <div id="ovmsg" class="mono">Checking for WebGPU…</div>
+  <div class="bar"><i id="ovbar"></i></div>
+  <div id="ovdetail" class="mono"></div>
+</div></div>
+
+<script type="module">
+import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1/+esm';
+
+// ---------- UI handles ----------
+const $ = id => document.getElementById(id);
+const ov = $('overlay'), ovmsg = $('ovmsg'), ovbar = $('ovbar'), ovdetail = $('ovdetail');
+const say = (t, cls) => { $('status').innerHTML = t; $('status').className = 'status ' + (cls || ''); };
+const fail = (t) => { ovmsg.innerHTML = `<span class="err">${t}</span>`; ov.style.display = 'flex'; throw new Error(t); };
+
+// ---------- bundle ----------
+// Weights live on Hugging Face (naklitechie/flymate-chess). `?weights=local` uses ./weights/chess/ for development.
+const HF = 'https://huggingface.co/naklitechie/flymate-chess/resolve/main/';
+const W = new URLSearchParams(location.search).get('weights') === 'local' ? 'weights/chess/' : HF;
+const FILES = ['meta.json','indptr.bin','edges.idx.bin','edges.w.bin','step.bin','encoder.bin','input_idx.bin','decoder.bin','readout_idx.bin','heads.bin','pos.bin'];
+async function loadBundle() {
+  const cache = await caches.open('flymate-chess-v1').catch(() => null);   // per-viewer cache of the 159 MB bundle
+  const out = {}; let done = 0, total = 0, sizes = {};
+  const EXPECT = { 'edges.idx.bin': 60.4e6, 'edges.w.bin': 30.2e6, 'decoder.bin': 42.7e6, 'encoder.bin': 17.0e6, 'step.bin': 5.5e6, 'heads.bin': 2.1e6 };
+  total = FILES.reduce((a, f) => a + (EXPECT[f] || 0.6e6), 0);
+  for (const f of FILES) {
+    let res = cache && await cache.match(W + f);
+    if (!res) {
+      const r = await fetch(W + f); if (!r.ok) fail(`could not fetch ${f} (${r.status})`);
+      sizes[f] = +r.headers.get('content-length') || EXPECT[f] || 0.6e6;
+      const reader = r.body.getReader(); const chunks = []; let got = 0;
+      for (;;) { const { value, done: d } = await reader.read(); if (d) break; chunks.push(value); got += value.length;
+        ovbar.style.width = (100 * (done + got) / total).toFixed(1) + '%'; ovdetail.textContent = `${f}  ${(got / 1e6).toFixed(1)} / ${(sizes[f] / 1e6).toFixed(1)} MB`; }
+      const blob = new Blob(chunks); res = new Response(blob, { headers: { 'content-type': f.endsWith('.json') ? 'application/json' : 'application/octet-stream' } });
+      if (cache) await cache.put(W + f, res.clone());
+    } else { ovdetail.textContent = `${f}  (cached)`; }
+    out[f] = f.endsWith('.json') ? await res.json() : await res.arrayBuffer();
+    done += sizes[f] || EXPECT[f] || 0.6e6; ovbar.style.width = (100 * done / total).toFixed(1) + '%';
+  }
+  return out;
+}
+
+// ---------- chess encoding (mirrors gofly/tasks/chess/encode.py) ----------
+const PT = { p: 0, n: 1, b: 2, r: 3, q: 4, k: 5 };
+function mirrorFen(fen) {                          // python-chess Board.mirror(): flip ranks, swap colours
+  const [pl, turn, cas, ep] = fen.split(' ');
+  const swap = s => s.replace(/[a-zA-Z]/g, c => c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase());
+  const ranks = pl.split('/').reverse().map(swap).join('/');
+  const ep2 = ep === '-' ? '-' : ep[0] + (ep[1] === '3' ? '6' : '3');
+  return `${ranks} ${turn === 'w' ? 'b' : 'w'} ${cas === '-' ? '-' : swap(cas)} ${ep2}`;
+}
+const mirrorUci = u => u[0] + (9 - +u[1]) + u[2] + (9 - +u[3]) + (u[4] || '');
+function features(fen) {                           // white to move → Float32Array(780)
+  const x = new Float32Array(780);
+  const [pl, , cas, ep] = fen.split(' ');
+  pl.split('/').forEach((row, i) => { let f = 0; for (const c of row) { if (c >= '1' && c <= '8') { f += +c; continue; }
+    const white = c === c.toUpperCase(); const plane = (white ? 0 : 6) + PT[c.toLowerCase()]; x[plane * 64 + f + 8 * (7 - i)] = 1; f++; } });
+  if (cas.includes('K')) x[768] = 1; if (cas.includes('Q')) x[769] = 1; if (cas.includes('k')) x[770] = 1; if (cas.includes('q')) x[771] = 1;
+  if (ep !== '-') x[772 + (ep.charCodeAt(0) - 97)] = 1;
+  return x;
+}
+function canonical(game) {                         // → {fen (white to move), mirrored}
+  const fen = game.fen().split(' ').slice(0, 4).join(' ');
+  return game.turn() === 'w' ? { fen, mirrored: false } : { fen: mirrorFen(fen), mirrored: true };
+}
+
+// ---------- WebGPU brain ----------
+const WGSL = /* wgsl */`
+struct P { n: u32, b: u32, t: u32, nin: u32, nro: u32, d: u32, f: u32, nout: u32, leak: f32, pad0: u32, pad1: u32, pad2: u32 }
+@group(0) @binding(0) var<uniform> p: P;
+@group(0) @binding(1) var<storage, read> indptr: array<u32>;
+@group(0) @binding(2) var<storage, read> eidx: array<u32>;
+@group(0) @binding(3) var<storage, read> ew: array<u32>;       // f16 pairs
+@group(0) @binding(4) var<storage, read> step: array<f32>;     // [T][2][N]
+@group(0) @binding(5) var<storage, read> inslot: array<u32>;   // N: input slot or 0xffffffff
+@group(0) @binding(6) var<storage, read> uin: array<f32>;      // [nin][B]
+@group(0) @binding(7) var<storage, read> hin: array<f32>;      // [N][B]
+@group(0) @binding(8) var<storage, read_write> hout: array<f32>;
+const BMAX: u32 = 72u;
+fn w16(e: u32) -> f32 { let v = unpack2x16float(ew[e >> 1u]); return select(v.x, v.y, (e & 1u) == 1u); }
+@compute @workgroup_size(64) fn settle(@builtin(global_invocation_id) g: vec3<u32>) {
+  let row = g.x; if (row >= p.n) { return; }
+  var acc: array<f32, BMAX>;
+  for (var b = 0u; b < p.b; b++) { acc[b] = 0.0; }
+  let e0 = indptr[row]; let e1 = indptr[row + 1u];
+  for (var e = e0; e < e1; e++) {
+    let w = w16(e); let base = eidx[e] * p.b;
+    for (var b = 0u; b < p.b; b++) { acc[b] += w * hin[base + b]; }
+  }
+  let slot = inslot[row];
+  let A = step[(p.t * 2u) * p.n + row]; let Bc = step[(p.t * 2u + 1u) * p.n + row];
+  for (var b = 0u; b < p.b; b++) {
+    var pre = acc[b]; if (slot != 0xffffffffu) { pre += uin[slot * p.b + b]; }
+    let h = hin[row * p.b + b];
+    hout[row * p.b + b] = (1.0 - p.leak) * h + p.leak * max(A * pre + Bc, 0.0);
+  }
+}
+@compute @workgroup_size(64) fn clear(@builtin(global_invocation_id) g: vec3<u32>) { if (g.x < p.n * p.b) { hout[g.x] = 0.0; } }
+`;
+const WGSL2 = /* wgsl */`
+struct P { n: u32, b: u32, t: u32, nin: u32, nro: u32, d: u32, f: u32, nout: u32, leak: f32, pad0: u32, pad1: u32, pad2: u32 }
+@group(0) @binding(0) var<uniform> p: P;
+@group(0) @binding(1) var<storage, read> encw: array<u32>;     // f16 [nin][F]
+@group(0) @binding(2) var<storage, read> encb: array<f32>;
+@group(0) @binding(3) var<storage, read> x: array<f32>;        // [B][F]
+@group(0) @binding(4) var<storage, read_write> uin: array<f32>;// [nin][B]
+@group(0) @binding(5) var<storage, read> decw: array<u32>;     // f16 [D][nro]
+@group(0) @binding(6) var<storage, read> decb: array<f32>;
+@group(0) @binding(7) var<storage, read> roidx: array<u32>;
+@group(0) @binding(8) var<storage, read> h: array<f32>;        // [N][B]
+@group(0) @binding(9) var<storage, read_write> z: array<f32>;  // [B][D]
+@group(0) @binding(10) var<storage, read> headw: array<u32>;   // f16 [nout][D]
+@group(0) @binding(11) var<storage, read> headb: array<f32>;
+@group(0) @binding(12) var<storage, read_write> out: array<f32>; // [B][nout]
+@group(0) @binding(13) var<storage, read_write> hroot: array<f32>; // [N] slice b=0
+fn f16at(a: ptr<storage, array<u32>, read>, i: u32) -> f32 { let v = unpack2x16float((*a)[i >> 1u]); return select(v.x, v.y, (i & 1u) == 1u); }
+@compute @workgroup_size(64) fn encoder(@builtin(global_invocation_id) g: vec3<u32>) {
+  let id = g.x; if (id >= p.nin * p.b) { return; }
+  let j = id / p.b; let b = id % p.b;
+  var acc = encb[j];
+  for (var f = 0u; f < p.f; f++) { acc += f16at(&encw, j * p.f + f) * x[b * p.f + f]; }
+  uin[j * p.b + b] = acc;
+}
+var<workgroup> sh: array<f32, 256>;
+@compute @workgroup_size(256) fn decoder(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+  let d = wg.x; let b = wg.y; var acc = 0.0;
+  for (var k = l.x; k < p.nro; k += 256u) { acc += f16at(&decw, d * p.nro + k) * h[roidx[k] * p.b + b]; }
+  sh[l.x] = acc; workgroupBarrier();
+  for (var s = 128u; s > 0u; s >>= 1u) { if (l.x < s) { sh[l.x] += sh[l.x + s]; } workgroupBarrier(); }
+  if (l.x == 0u) { z[b * p.d + d] = max(sh[0] + decb[d], 0.0); }
+}
+@compute @workgroup_size(64) fn heads(@builtin(global_invocation_id) g: vec3<u32>) {
+  let id = g.x; if (id >= p.nout * p.b) { return; }
+  let b = id / p.nout; let o = id % p.nout;
+  var acc = headb[o];
+  for (var k = 0u; k < p.d; k++) { acc += f16at(&headw, o * p.d + k) * z[b * p.d + k]; }
+  out[b * p.nout + o] = acc;
+}
+@compute @workgroup_size(64) fn gatherRoot(@builtin(global_invocation_id) g: vec3<u32>) { if (g.x < p.n) { hroot[g.x] = h[g.x * p.b]; } }
+`;
+
+class Brain {
+  constructor(device, bundle) {
+    this.dev = device; const m = this.meta = bundle['meta.json'];
+    const N = m.N, E = m.E, T = m.T, nin = m.n_in, nro = m.n_ro, D = m.D, F = m.F, nout = m.n_moves + m.n_bins;
+    Object.assign(this, { N, E, T, nin, nro, D, F, nout, BMAX: 72 });
+    const buf = (data, usage = GPUBufferUsage.STORAGE) => { const size = Math.ceil(data.byteLength / 4) * 4;
+      const b = device.createBuffer({ size, usage: usage | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+      new Uint8Array(b.getMappedRange()).set(new Uint8Array(data)); b.unmap(); return b; };
+    const empty = (bytes, usage = GPUBufferUsage.STORAGE) => device.createBuffer({ size: bytes, usage: usage | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    // f16 pair arrays must be even-length in halves
+    const padHalf = ab => { if ((ab.byteLength / 2) % 2 === 0) return ab; const o = new Uint8Array(ab.byteLength + 2); o.set(new Uint8Array(ab)); return o.buffer; };
+    this.indptr = buf(bundle['indptr.bin']); this.eidx = buf(bundle['edges.idx.bin']); this.ew = buf(padHalf(bundle['edges.w.bin']));
+    this.step = buf(bundle['step.bin']);
+    const inputIdx = new Uint32Array(bundle['input_idx.bin']); const inslot = new Uint32Array(N).fill(0xffffffff); inputIdx.forEach((n, j) => inslot[n] = j);
+    this.inslot = buf(inslot.buffer);
+    const enc = bundle['encoder.bin']; this.encw = buf(padHalf(enc.slice(0, nin * F * 2))); this.encb = buf(enc.slice(nin * F * 2));
+    const dec = bundle['decoder.bin']; this.decw = buf(padHalf(dec.slice(0, D * nro * 2))); this.decb = buf(dec.slice(D * nro * 2));
+    this.roidx = buf(bundle['readout_idx.bin']);
+    // heads: policy W f16 [1968][D], b f32 [1968], value W f16 [64][D], b f32[64] → concatenate into one [nout][D] + [nout]
+    const hd = new Uint8Array(bundle['heads.bin']); const np_ = m.n_moves, nb = m.n_bins;
+    const pw = hd.subarray(0, np_ * D * 2), pb = hd.subarray(np_ * D * 2, np_ * D * 2 + np_ * 4);
+    const vw = hd.subarray(np_ * D * 2 + np_ * 4, np_ * D * 2 + np_ * 4 + nb * D * 2), vb = hd.subarray(np_ * D * 2 + np_ * 4 + nb * D * 2);
+    const hw = new Uint8Array(nout * D * 2); hw.set(pw); hw.set(vw, np_ * D * 2); const hb = new Uint8Array(nout * 4); hb.set(pb); hb.set(vb, np_ * 4);
+    this.headw = buf(hw.buffer); this.headb = buf(hb.buffer);
+    this.x = empty(this.BMAX * F * 4); this.uin = empty(nin * this.BMAX * 4);
+    this.hA = empty(N * this.BMAX * 4); this.hB = empty(N * this.BMAX * 4);
+    this.z = empty(this.BMAX * D * 4); this.out = empty(this.BMAX * nout * 4); this.hroot = empty(N * 4);
+    this.read = device.createBuffer({ size: this.BMAX * nout * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    this.readRoot = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    this.uni = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const mod1 = device.createShaderModule({ code: WGSL }), mod2 = device.createShaderModule({ code: WGSL2 });
+    const pipe = (mod, entry) => device.createComputePipeline({ layout: 'auto', compute: { module: mod, entryPoint: entry } });
+    this.pSettle = pipe(mod1, 'settle'); this.pClear = pipe(mod1, 'clear');
+    this.pEnc = pipe(mod2, 'encoder'); this.pDec = pipe(mod2, 'decoder'); this.pHeads = pipe(mod2, 'heads'); this.pGather = pipe(mod2, 'gatherRoot');
+    // layout:'auto' exposes only the bindings each entry point uses — build bind groups per pipeline from a full entry list
+    const all1 = (hin, hout) => [[0, this.uni], [1, this.indptr], [2, this.eidx], [3, this.ew], [4, this.step], [5, this.inslot], [6, this.uin], [7, hin], [8, hout]];
+    const all2 = (h) => [[0, this.uni], [1, this.encw], [2, this.encb], [3, this.x], [4, this.uin], [5, this.decw], [6, this.decb], [7, this.roidx], [8, h],
+      [9, this.z], [10, this.headw], [11, this.headb], [12, this.out], [13, this.hroot]];
+    const used = { settle: [0, 1, 2, 3, 4, 5, 6, 7, 8], clear: [0, 8], encoder: [0, 1, 2, 3, 4], decoder: [0, 5, 6, 7, 8, 9], heads: [0, 9, 10, 11, 12], gatherRoot: [0, 8, 13] };
+    const bg = (pl, entries, keep) => device.createBindGroup({ layout: pl.getBindGroupLayout(0),
+      entries: entries.filter(([i]) => keep.includes(i)).map(([binding, buffer]) => ({ binding, resource: { buffer } })) });
+    this.bgAB = bg(this.pSettle, all1(this.hA, this.hB), used.settle); this.bgBA = bg(this.pSettle, all1(this.hB, this.hA), used.settle);
+    this.bgClear = bg(this.pClear, all1(this.hB, this.hA), used.clear);
+    const g2 = h => ({ enc: bg(this.pEnc, all2(h), used.encoder), dec: bg(this.pDec, all2(h), used.decoder), heads: bg(this.pHeads, all2(h), used.heads), gather: bg(this.pGather, all2(h), used.gatherRoot) });
+    this.bg2 = { A: g2(this.hA), B: g2(this.hB) };
+  }
+  setUni(b, t) {
+    const u = new ArrayBuffer(48); const dv = new DataView(u);
+    [this.N, b, t, this.nin, this.nro, this.D, this.F, this.nout].forEach((v, i) => dv.setUint32(i * 4, v, true)); dv.setFloat32(32, this.meta.leak, true);
+    this.dev.queue.writeBuffer(this.uni, 0, u);
+  }
+  /** xs: array of Float32Array(780) → { logits: Float32Array[B][nout], hroot?: Float32Array(N) } */
+  async forward(xs, wantRoot = false) {
+    const B = xs.length; if (B > this.BMAX) throw new Error('batch too large');
+    const xb = new Float32Array(B * this.F); xs.forEach((x, i) => xb.set(x, i * this.F));
+    this.dev.queue.writeBuffer(this.x, 0, xb);
+    const wg = n => Math.ceil(n / 64);
+    // clear hA, encoder → uin, then settle T steps ping-pong: hA→hB→hA...
+    this.setUni(B, 0);
+    let enc = this.dev.createCommandEncoder(); let pass = enc.beginComputePass();
+    pass.setPipeline(this.pClear); pass.setBindGroup(0, this.bgClear); pass.dispatchWorkgroups(wg(this.N * B));
+    pass.setPipeline(this.pEnc); pass.setBindGroup(0, this.bg2.A.enc); pass.dispatchWorkgroups(wg(this.nin * B));
+    pass.end(); this.dev.queue.submit([enc.finish()]);
+    let cur = 'A';
+    for (let t = 0; t < this.T; t++) {
+      this.setUni(B, t);
+      enc = this.dev.createCommandEncoder(); pass = enc.beginComputePass();
+      pass.setPipeline(this.pSettle); pass.setBindGroup(0, cur === 'A' ? this.bgAB : this.bgBA); pass.dispatchWorkgroups(wg(this.N));
+      pass.end(); this.dev.queue.submit([enc.finish()]); cur = cur === 'A' ? 'B' : 'A';
+    }
+    const g = this.bg2[cur];
+    enc = this.dev.createCommandEncoder(); pass = enc.beginComputePass();
+    pass.setPipeline(this.pDec); pass.setBindGroup(0, g.dec); pass.dispatchWorkgroups(this.D, B);
+    pass.setPipeline(this.pHeads); pass.setBindGroup(0, g.heads); pass.dispatchWorkgroups(wg(this.nout * B));
+    if (wantRoot) { pass.setPipeline(this.pGather); pass.setBindGroup(0, g.gather); pass.dispatchWorkgroups(wg(this.N)); }
+    pass.end();
+    enc.copyBufferToBuffer(this.out, 0, this.read, 0, B * this.nout * 4);
+    if (wantRoot) enc.copyBufferToBuffer(this.hroot, 0, this.readRoot, 0, this.N * 4);
+    this.dev.queue.submit([enc.finish()]);
+    await this.read.mapAsync(GPUMapMode.READ); const logits = new Float32Array(this.read.getMappedRange().slice(0, B * this.nout * 4)); this.read.unmap();
+    let hroot = null;
+    if (wantRoot) { await this.readRoot.mapAsync(GPUMapMode.READ); hroot = new Float32Array(this.readRoot.getMappedRange().slice(0)); this.readRoot.unmap(); }
+    return { logits, hroot };
+  }
+}
+
+// ---------- game ----------
+let brain, meta, moveIndex, game = new Chess(), human = 'w', busy = false, lastMove = null, sel = null, posXY = null;
+const centers = () => Float32Array.from({ length: 64 }, (_, i) => (i + 0.5) / 64);
+const softmaxDot = (v, off, n, c) => { let mx = -Infinity; for (let i = 0; i < n; i++) mx = Math.max(mx, v[off + i]); let s = 0, acc = 0;
+  for (let i = 0; i < n; i++) { const e = Math.exp(v[off + i] - mx); s += e; acc += e * c[i]; } return acc / s; };
+
+async function verify() {
+  const C = centers(); let maxErr = 0, ok = true, lines = [];
+  for (const t of meta.tests) {
+    const g = new Chess(t.fen + ' 0 1'); const { fen } = canonical(g);
+    const { logits } = await brain.forward([features(fen)]);
+    const legal = new Set(g.moves({ verbose: true }).map(m => m.from + m.to + (m.promotion || '')).map(u => t.mirrored ? mirrorUci(u) : u));
+    let best = -Infinity, bi = -1;
+    for (let i = 0; i < meta.n_moves; i++) if (legal.has(meta.moves[i]) && logits[i] > best) { best = logits[i]; bi = i; }
+    for (const [mv, l] of t.top5) maxErr = Math.max(maxErr, Math.abs(logits[moveIndex.get(mv)] - l));
+    const wp = softmaxDot(logits, meta.n_moves, meta.n_bins, C);
+    const pass = meta.moves[bi] === t.top5[0][0] && Math.abs(wp - t.win_prob) < 0.03;
+    ok = ok && pass; lines.push(`${pass ? '✓' : '✗'} ${t.fen.slice(0, 28)}… top1 ${meta.moves[bi]} (torch ${t.top5[0][0]})  win ${(wp * 100).toFixed(1)}% (torch ${(t.win_prob * 100).toFixed(1)}%)`);
+  }
+  return { ok, maxErr, lines };
+}
+
+function uciOf(m) { return m.from + m.to + (m.promotion || ''); }
+
+async function flyMove() {
+  if (game.isGameOver() || busy) return; busy = true; render();
+  const t0 = performance.now();
+  const legal = game.moves({ verbose: true });
+  const root = canonical(game); const xs = [features(root.fen)]; const meta_ = [];
+  const look = $('look').checked;
+  if (look) for (const m of legal) {
+    game.move(m); const term = game.isCheckmate() ? 1 : game.isDraw() ? 0.5 : null;
+    if (term === null) { const c = canonical(game); xs.push(features(c.fen)); meta_.push({ m, idx: xs.length - 1, term }); } else meta_.push({ m, idx: -1, term });
+    game.undo();
+  }
+  // batches of ≤ BMAX
+  const logits = new Float32Array(xs.length * brain.nout); let hroot = null;
+  for (let s = 0; s < xs.length; s += brain.BMAX) {
+    const r = await brain.forward(xs.slice(s, s + brain.BMAX), s === 0); logits.set(r.logits, s * brain.nout); if (s === 0) hroot = r.hroot;
+  }
+  // policy prior over legal moves (root, canonical orientation)
+  const prior = new Map(); let mx = -Infinity;
+  for (const m of legal) { const u = uciOf(m); const l = logits[moveIndex.get(root.mirrored ? mirrorUci(u) : u)]; prior.set(u, l); mx = Math.max(mx, l); }
+  let z = 0; for (const [u, l] of prior) { const e = Math.exp(l - mx); prior.set(u, e); z += e; } for (const [u, e] of prior) prior.set(u, e / z);
+  const C = centers(); const rootWin = softmaxDot(logits, meta.n_moves, meta.n_bins, C);
+  const scored = [];
+  if (look) for (const { m, idx, term } of meta_) {
+    const oppWin = term !== null ? 1 - term : softmaxDot(logits, idx * brain.nout + meta.n_moves, meta.n_bins, C);
+    scored.push({ m, win: 1 - oppWin, prior: prior.get(uciOf(m)), score: (1 - oppWin) + 0.2 * prior.get(uciOf(m)) });
+  } else for (const m of legal) scored.push({ m, win: rootWin, prior: prior.get(uciOf(m)), score: prior.get(uciOf(m)) });
+  scored.sort((a, b) => b.score - a.score);
+  const pick = scored[0].m; game.move(pick); lastMove = pick;
+  const ms = performance.now() - t0;
+  $('timing').textContent = `${xs.length} position${xs.length > 1 ? 's' : ''} through the whole brain in ${ms.toFixed(0)} ms · fly's win estimate ${(rootWin * 100).toFixed(0)}%`;
+  $('cands').innerHTML = scored.slice(0, 5).map((s, i) => `${i === 0 ? '<b>' : ''}${s.m.san.padEnd(7)} ${look ? 'win ' + (s.win * 100).toFixed(0).padStart(3) + '%' : ''}  prior ${(s.prior * 100).toFixed(0).padStart(3)}%${i === 0 ? '</b>' : ''}`).join('<br>');
+  if (hroot) drawBrain(hroot);
+  busy = false; sel = null; render();
+}
+
+function drawBrain(h) {
+  const cv = $('brain'), ctx = cv.getContext('2d'); const Wc = cv.width, Hc = cv.height;
+  ctx.fillStyle = '#0b0d11'; ctx.fillRect(0, 0, Wc, Hc);
+  if (!posXY) return;
+  const n = h.length; let mx = 0; for (let i = 0; i < n; i++) mx = Math.max(mx, h[i]);
+  const img = ctx.createImageData(Wc, Hc); const d = img.data;
+  for (let i = 0; i < n; i++) {
+    const px = posXY.x[i], py = posXY.y[i]; if (px < 0 || py < 0 || px >= Wc || py >= Hc) continue;
+    const a = mx > 0 ? Math.min(1, Math.log1p(h[i]) / Math.log1p(mx)) : 0; const o = (py * Wc + px) * 4;
+    d[o] = Math.max(d[o], 40 + 202 * a); d[o + 1] = Math.max(d[o + 1], 40 + 153 * a); d[o + 2] = Math.max(d[o + 2], 40 + 30 * a); d[o + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// ---------- board rendering ----------
+const GLYPH = { p: '♟', n: '♞', b: '♝', r: '♜', q: '♛', k: '♚' };
+function render() {
+  const bd = $('board'); bd.innerHTML = '';
+  const flip = human === 'b'; const board = game.board();
+  const targets = new Set(sel ? game.moves({ square: sel, verbose: true }).map(m => m.to) : []);
+  for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) {
+    const rr = flip ? 7 - r : r, ff = flip ? 7 - f : f; const sq = 'abcdefgh'[ff] + (8 - rr); const pc = board[rr][ff];
+    const el = document.createElement('div'); el.className = 'sq ' + ((rr + ff) % 2 ? 'd' : 'l');
+    if (sel === sq) el.classList.add('sel'); if (lastMove && (lastMove.from === sq || lastMove.to === sq)) el.classList.add('last');
+    if (targets.has(sq)) el.classList.add(pc ? 'cap' : 'dot');
+    if (pc) el.innerHTML = `<span class="${pc.color}">${GLYPH[pc.type]}</span>`;
+    if (ff === (flip ? 7 : 0)) el.insertAdjacentHTML('beforeend', `<span class="coord">${8 - rr}</span>`);
+    if (rr === (flip ? 0 : 7)) el.insertAdjacentHTML('beforeend', `<span class="coordf">${'abcdefgh'[ff]}</span>`);
+    el.onclick = () => onSquare(sq); bd.appendChild(el);
+  }
+  const h = game.history(); $('moves').textContent = h.map((m, i) => (i % 2 === 0 ? `${i / 2 + 1}. ` : '') + m).join(' ');
+  if (game.isGameOver()) {
+    const res = game.isCheckmate() ? (game.turn() === human ? 'Checkmate. The fly wins.' : 'Checkmate — you beat a fly.') : game.isStalemate() ? 'Stalemate.' : game.isThreefoldRepetition() ? 'Draw by repetition.' : game.isInsufficientMaterial() ? 'Draw — insufficient material.' : 'Draw.';
+    say(res, game.isCheckmate() && game.turn() !== human ? 'ok' : '');
+  } else if (busy) say('The fly is thinking…');
+  else say(game.turn() === human ? (game.inCheck() ? 'Your move — you are in check.' : 'Your move.') : 'Fly to move.');
+  $('undo').disabled = busy || game.history().length < 1; $('side').textContent = human === 'w' ? 'Play as Black' : 'Play as White';
+}
+function onSquare(sq) {
+  if (busy || game.isGameOver() || game.turn() !== human) return;
+  const pc = game.get(sq);
+  if (sel) {
+    const mv = game.moves({ square: sel, verbose: true }).find(m => m.to === sq);
+    if (mv) { game.move({ from: sel, to: sq, promotion: mv.promotion ? 'q' : undefined }); lastMove = mv; sel = null; render(); setTimeout(flyMove, 30); return; }
+  }
+  sel = pc && pc.color === human ? sq : null; render();
+}
+$('new').onclick = () => { if (busy) return; game = new Chess(); lastMove = null; sel = null; $('cands').textContent = '—'; render(); if (human === 'b') flyMove(); };
+$('side').onclick = () => { if (busy) return; human = human === 'w' ? 'b' : 'w'; $('new').onclick(); };
+$('undo').onclick = () => { if (busy) return; game.undo(); if (game.turn() !== human) game.undo(); lastMove = null; sel = null; render(); };
+
+// ---------- boot ----------
+(async () => {
+  if (!navigator.gpu) fail('This browser has no WebGPU. Use Chrome, Edge, or Safari 26+ on a machine with a GPU.');
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }); if (!adapter) fail('No WebGPU adapter found.');
+  const lim = adapter.limits; const device = await adapter.requestDevice({ requiredLimits: {
+    maxStorageBufferBindingSize: Math.min(lim.maxStorageBufferBindingSize, 256 << 20), maxBufferSize: Math.min(lim.maxBufferSize, 256 << 20),
+    maxStorageBuffersPerShaderStage: Math.max(lim.maxStorageBuffersPerShaderStage >= 13 ? 13 : 8, 8) } }).catch(e => fail('WebGPU device: ' + e.message));
+  device.lost.then(i => say(`<span class="err">GPU device lost: ${i.message}</span>`));
+  ovmsg.textContent = 'Downloading the brain (159 MB, cached after the first visit)…';
+  const bundle = await loadBundle();
+  meta = bundle['meta.json']; moveIndex = new Map(meta.moves.map((m, i) => [m, i]));
+  ovmsg.textContent = 'Wiring 15.1 million synapses into your GPU…'; ovdetail.textContent = '';
+  await new Promise(r => setTimeout(r, 20));
+  try { brain = new Brain(device, bundle); } catch (e) { fail('Brain setup: ' + e.message); }
+  // neuron positions → canvas pixels
+  const pxy = new Float32Array(new Uint16Array(bundle['pos.bin']).length); { const u16 = new Uint16Array(bundle['pos.bin']);
+    const f16 = h => { const s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, f = h & 0x3ff; return e === 0 ? s * f * 2 ** -24 : e === 31 ? (f ? NaN : s * Infinity) : s * (1 + f / 1024) * 2 ** (e - 15); };
+    for (let i = 0; i < u16.length; i++) pxy[i] = f16(u16[i]); }
+  { const cv = $('brain'); let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity; const n = pxy.length / 2;
+    for (let i = 0; i < n; i++) { minx = Math.min(minx, pxy[2 * i]); maxx = Math.max(maxx, pxy[2 * i]); miny = Math.min(miny, pxy[2 * i + 1]); maxy = Math.max(maxy, pxy[2 * i + 1]); }
+    const sc = Math.min((cv.width - 8) / (maxx - minx), (cv.height - 8) / (maxy - miny));
+    posXY = { x: new Int16Array(n), y: new Int16Array(n) };
+    for (let i = 0; i < n; i++) { posXY.x[i] = 4 + (pxy[2 * i] - minx) * sc; posXY.y[i] = 4 + (pxy[2 * i + 1] - miny) * sc; } }
+  ovmsg.textContent = 'Checking the fly against the reference implementation…';
+  const t0 = performance.now(); let v; try { v = await verify(); } catch (e) { fail('Verification crashed: ' + e.message); }
+  const dt = (performance.now() - t0) / meta.tests.length;
+  $('meta').innerHTML = `${meta.N.toLocaleString()} neurons · ${meta.E.toLocaleString()} synapses · ${meta.T} settle steps · leak ${meta.leak}<br>encoder 780→${meta.n_in} photoreceptors · readout ${meta.n_ro.toLocaleString()} central + descending neurons → ${meta.n_moves} moves + ${meta.n_bins} value bins<br>checkpoint: ${meta.checkpoint}<br>` +
+    `<span class="${v.ok ? 'ok' : 'err'}">${v.ok ? 'verified' : 'MISMATCH'} against torch on ${meta.tests.length} positions — max logit error ${v.maxErr.toFixed(3)}</span> · ${dt.toFixed(0)} ms per forward pass<br>` + v.lines.map(l => l.replace(/</g, '&lt;')).join('<br>');
+  if (!v.ok) fail('The GPU brain does not match the reference implementation. Details in "The brain" panel. ' + v.lines.join(' | '));
+  ov.style.display = 'none'; render();
+})().catch(e => { console.error(e); if (ov.style.display !== 'none') ovmsg.innerHTML = `<span class="err">${e.message}</span>`; });
+</script>
+</body>
+</html>
